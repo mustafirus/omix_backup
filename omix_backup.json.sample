@@ -1,0 +1,26 @@
+[
+    {
+        "client": "client1",
+        "dest":   "omix_cloud",
+        "vms": [
+            {
+                "host": "pm1.client2.bla",
+                "vmid": "1011002"
+            }
+        ]
+    },
+    {
+        "client": "client2",
+        "dest":   "localhost:backup/test/pm1",
+        "vms": [
+            {
+                "host": "pm1.client2.bla",
+                "vmid": "101"
+            },
+            {
+                "host": "pm2.client2.bla",
+                "vmid": "102"
+            }
+        ]
+    }
+]
