@@ -1,3 +1,4 @@
+#!/usr/bin/python
 import json
 import subprocess
 
@@ -5,7 +6,7 @@ omix_cloud_dest = 'pm1.ssc.bla:rpool/misc/omixbackup'
 
 
 def loadconfig():
-    with open("omix_backup.json", 'r') as conffile:
+    with open(".conf/omix_backup.json", 'r') as conffile:
         return json.load(conffile)
 
 
@@ -13,7 +14,7 @@ def loadconfig():
 def start():
     backup_config = loadconfig()
     dests = list(d['dest'] if d['dest'] != 'omix_cloud' else omix_cloud_dest for d in backup_config)
-    hosts = list(v1['host'] for v2 in backup_config for v1 in v2['vms'])
+    hosts = list(v1['src_host']+"."+v2["domain"] for v2 in backup_config for v1 in v2['src'])
     hosts += list(d.split(':')[0] for d in dests)
     hosts = list(set(hosts))
     for host in hosts:
