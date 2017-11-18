@@ -1,0 +1,2 @@
+if $programname == 'omix_zas' then /var/log/omix_zas.log
+if $programname == 'omix_zas' then stop
