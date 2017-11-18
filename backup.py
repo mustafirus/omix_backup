@@ -310,6 +310,7 @@ def client_backup(client):
         _log_info("next run for client: " + client['client'])
         for dataset in datasets:
             dataset.run()  # TODO periodicaly rerun _update for changes of interval
+            # TODO catch CalledProcessError retry in 10? min or try ping before run
             next_run = min(next_run, dataset.next) if next_run else dataset.next
             if shutdown.is_set():
                 return
