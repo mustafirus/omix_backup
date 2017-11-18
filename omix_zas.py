@@ -9,7 +9,7 @@ from time import sleep
 
 import itertools
 from dateutil.relativedelta import relativedelta
-state_file = "/var/run/ozas.state"
+state_file = "/var/run/omix_zas.state"
 run_next = 0
 run_next_hour = 0
 run_next_day = 0
