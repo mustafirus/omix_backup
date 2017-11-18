@@ -1,0 +1,11 @@
+[Unit]
+Description=Omix Zfs Auto Snapshot
+
+[Service]
+ExecStart=/usr/local/sbin/omix_zas.py
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=omix_zas
+
+[Install]
+WantedBy=multi-user.target
