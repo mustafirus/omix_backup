@@ -109,7 +109,8 @@ def snapit():
 def periods_from_attribute(val):
     re_dD = re.compile("(\d+)(\D)")
     periods = {}
-    if val == "-":
+    val = val.lower()
+    if val in ('-', 'false', 'no', 'skip'):
         return periods
     for val in val.split():
         try:
