@@ -37,7 +37,7 @@ def next_day():
 
 
 def next_week():
-    td = date.today()
+    td = date.today() + timedelta(days=1)
     return datetime.combine(td + timedelta(days=(6-td.weekday())), datetime.min.time())
 
 
@@ -91,7 +91,7 @@ def snapit():
     elif datetime.now().timestamp() > run_next_week:
         period = "weekly"
     elif datetime.now().timestamp() > run_next_day:
-        period = "dayly"
+        period = "daily"
     elif datetime.now().timestamp() > run_next_hour:
         period = "hourly"
     else:
@@ -122,7 +122,7 @@ def periods_from_attribute(val):
 
 
 def delit():
-    re_snap_type = re.compile("@omix_(monthly|weekly|dayly|hourly)-")
+    re_snap_type = re.compile("@omix_(monthly|weekly|daily|hourly)-")
     for zpool in zpools:
         datasets = subrun("/sbin/zfs list -rHo name,ua.com.omix:autosnap {}".format(zpool)).strip().splitlines()
         for dataset in datasets:
