@@ -294,10 +294,10 @@ class Dataset(object):
                     return
                 self.update()
 
-            _log_info("Dataset: {}".format(self))
+#            _log_info("Dataset: {}".format(self))
             if not self.last:
                 self._find_last_snap()
-            _log_info("Dataset: {}".format(self))
+#            _log_info("Dataset: {}".format(self))
 
             self._snap()
             cmd_send = "zfs send -pv {}@omix_send -I {} ".format(self.src_path, self.snap)
