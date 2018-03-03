@@ -14,7 +14,10 @@ confdir = '.conf'
 logdir = '.log'
 sync_lock = Lock()
 shutdown = Event()
-
+DEFAULT_INTERVAL = '1h'#'99999d'
+FAIL_INTERVAL = 3600 # swconds
+#TODO: check mbuffer installed
+#TODO: info:  remote sync send: from None cmd: None...
 
 class Shutdown(Exception):
     pass
@@ -102,8 +105,10 @@ def remote_sync_cmd(host, cmd, log):
 
 
 def remote_sync(send_host, send_cmd, recv_host, recv_cmd, log):
-    _log_info("remote sync send: from {} cmd: {}...".format(send_host, send_cmd))
-    _log_info("remote sync recv: to   {} cmd: {}...".format(recv_host, recv_cmd))
+    if send_host and send_cmd:
+        _log_info("remote sync send: from {} cmd: {}...".format(send_host, send_cmd))
+    if recv_host and recv_cmd:
+        _log_info("remote sync recv: to   {} cmd: {}...".format(recv_host, recv_cmd))
 
     with sync_lock:
         recv = remote_sync_cmd(recv_host, recv_cmd, log)
@@ -126,6 +131,23 @@ def remote_sync(send_host, send_cmd, recv_host, recv_cmd, log):
 
 
 class Dataset(object):
+    def __str__(self):
+        s = "client: {}; src_host: {}; src_path: {}; dest_host: {}; " \
+            "dest_path: {}; dest_exists: {}; snap: {}; start: {}; last: {}; " \
+            "interval: {}; next: {}; next_update: {};"
+        return s.format(self.client,
+                        self.src_host,
+                        self.src_path,
+                        self.dest_host,
+                        self.dest_path,
+                        self.dest_exists,
+                        self.snap,
+                        self.start,
+                        self.last,
+                        self.interval,
+                        self.next,
+                        self.next_update)
+
     def __init__(self, client, host, path, dest):
         self.client = client['client']
         self.src_host = host
@@ -147,19 +169,23 @@ class Dataset(object):
             self._del_snap_src()
         params = remote_script(host=self.src_host, script=get_dataset_params, args=[self.src_path])
         params = json.loads(params)  # exception on wrong params
+        self.origin = params["origin"]  # from snap
         self.snap = params["snap_first"]  # from snap
         self.start = datetime.strptime(params["omix_sync_start"], "%Y-%m-%d %H:%M").timestamp()\
             if params["omix_sync_start"] else 0
         self.last = params["omix_sync_time"]
-        self.interval = self._interval_to_timestamp(params["omix_sync_interval"] or '99999d')
+        self.interval = self._interval_to_timestamp(params["omix_sync_interval"])
         self.next = self.last + self.interval  # TODO make daily at night
         if self.start > self.next:
             self.next = self.start
         self.next_update = datetime.now().timestamp() + 3600
+        # _log_info("Dataset: {}".format(self))
         pass
 
     @staticmethod
     def _interval_to_timestamp(interval):
+        if not interval:
+         interval = DEFAULT_INTERVAL
         m = {'d': 86400, 'h': 3600, 'm': 60}
         q = int(interval[:-1] or 0)
         k = m.get(interval[-1]) or 0
@@ -182,6 +208,7 @@ class Dataset(object):
     def _snap(self):
         if not check_fs(self.src_host, '{}@omix_send'.format(self.src_path)):
             run(['ssh', "root@" + self.src_host, 'zfs snap {}@omix_send'.format(self.src_path)], check=True)
+        return "@omix_send"
 
     def _del_snap_src(self):
         old_sync = '{}@omix_sync'.format(self.src_path)
@@ -207,14 +234,17 @@ class Dataset(object):
         if log:
             self._log_cmd(log, cmd_send, cmd_recv)
         if self.src_host != self.dest_host:
-            return remote_sync(send_host=self.src_host, send_cmd=cmd_send + mbuf_send,
+            ret = remote_sync(send_host=self.src_host, send_cmd=cmd_send + mbuf_send,
                                recv_host=self.dest_host, recv_cmd=mbuf_recv + cmd_recv,
                                log=log)
         else:
-            return remote_sync(send_host=None, send_cmd=None, recv_host=self.dest_host,
+            ret = remote_sync(send_host=None, send_cmd=None, recv_host=self.dest_host,
                                recv_cmd=cmd_send + mbuf_loc + cmd_recv,
                                log=log)
-        pass
+        if not ret:
+            self.next = datetime.now().timestamp() + FAIL_INTERVAL
+            # send notification
+        return ret
 
     def _find_last_snap(self):
         # TODO rewite for checking omix_sync on src and dest
@@ -222,8 +252,9 @@ class Dataset(object):
                                    script="zfs list -rHtsnap -oname -Screation $1 | sed -e's/^.*@/@/'",
                                    args=[self.dest_path])
         dest_snaps = dest_snaps.strip().split('\n')
+        _log_info("dest_snaps: {}".format(dest_snaps))
         for snap in dest_snaps:
-            if check_fs(self.src_host, self.src_path + snap):
+            if snap and check_fs(self.src_host, self.src_path + snap):
                 self.snap = snap
                 break
         pass
@@ -255,19 +286,25 @@ class Dataset(object):
                 self.next = datetime.now().timestamp() + 600
                 return
             if not self.dest_exists:
-                cmd_send = "zfs send -pv {}{} ".format(self.src_path, self.snap)
+                fromorigin = "-I {}".format(self.origin) if self.origin else ""
+                if not self.snap:
+                    self.snap = self._snap()
+                cmd_send = "zfs send -pv {}{} {}".format(self.src_path, self.snap, fromorigin)
                 if not self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv, log=logfile):
                     return
                 self.update()
 
+            _log_info("Dataset: {}".format(self))
             if not self.last:
                 self._find_last_snap()
+            _log_info("Dataset: {}".format(self))
 
             self._snap()
             cmd_send = "zfs send -pv {}@omix_send -I {} ".format(self.src_path, self.snap)
-            if self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv, log=logfile):
-                self._rename_snap()
-        self.update()
+            if not self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv, log=logfile):
+                return
+            self._rename_snap()
+            self.update()
 
 
 def client_backup(client):
@@ -309,6 +346,7 @@ def client_backup(client):
         next_run = None
         _log_info("next run for client: " + client['client'])
         for dataset in datasets:
+            # _log_info("run dataset: {}: {}".format(client['client'], dataset))
             dataset.run()  # TODO periodicaly rerun _update for changes of interval
             # TODO catch CalledProcessError retry in 10? min or try ping before run
             next_run = min(next_run, dataset.next) if next_run else dataset.next
@@ -381,7 +419,7 @@ origin=$(zfs get -Hpo value origin $dataset)
 #set -x
 omix_sync=$(echo "$snaps" | sed -ne 's/^.*@omix_sync.*$/@omix_sync/p')
 snap_first=$(echo "$snaps" | sed -ne '1 s/^.*@/@/p')
-[ $origin = - ] || snap_first=$origin
+#[ $origin = - ] && origin=
 [ -z $omix_sync ] || snap_first=$omix_sync
 
 [ -n "$omix_sync" ] && omix_sync_time=$(zfs get -Hpo value creation $dataset@omix_sync) || omix_sync_time=0
@@ -394,6 +432,7 @@ omix_sync_interval=$(zfs get -Hpo value "ua.com.omix:sync_interval" $dataset)
 cat <<EOF
 {
     "dataset": "$dataset",
+    "origin": "$origin",
     "snap_first": "$snap_first",
     "omix_sync_time": $omix_sync_time,
     "omix_sync_start": "$omix_sync_start",

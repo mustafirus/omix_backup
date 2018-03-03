@@ -14,7 +14,7 @@ def loadconfig():
 def start():
     backup_config = loadconfig()
     dests = list(d['dest'] if d['dest'] != 'omix_cloud' else omix_cloud_dest for d in backup_config)
-    hosts = list(v1['src_host']+"."+v2["domain"] for v2 in backup_config for v1 in v2['src'])
+    hosts = list(v1['host']+"."+v2["domain"] for v2 in backup_config for v1 in v2['src'])
     hosts += list(d.split(':')[0] for d in dests)
     hosts = list(set(hosts))
     for host in hosts:
