@@ -291,20 +291,22 @@ class Dataset(object):
                           .format(self.client, self.src_path))
                 self.next = datetime.now().timestamp() + 600
                 return
-            if not self.dest_exists:
-                fromorigin = "-I {}".format(self.origin) if self.origin else ""
-                if not self.snap:
-                    self.snap = self._snap()
-                cmd_send = "zfs send -pv {}{} {}".format(self.src_path, self.snap, fromorigin)
-                if not self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv, log=logfile):
-                    return
-                self.update()
+            # if not self.dest_exists:
+            #     fromorigin = "-I {}".format(self.origin) if self.origin else ""
+            #     if not self.snap:
+            #         self.snap = self._snap()
+            #     cmd_send = "zfs send -pv {}{} {}".format(self.src_path, self.snap, fromorigin)
+            #     if not self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv, log=logfile):
+            #         return
+            #     self.update()
 
-            if not self.last:
-                self._find_last_snap()
+            # if not self.last:
+            #     self._find_last_snap()
 
             self._snap()
-            cmd_send = "zfs send -pv {}@omix_send -I {} ".format(self.src_path, self.snap)
+            if self.dest_exists:
+                fromsnap = "-I @omix_sync"
+            cmd_send = "zfs send -Rv {}@omix_send {} ".format(self.src_path, fromsnap)
             if not self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv, log=logfile):
                 return
             self._rename_snap()
