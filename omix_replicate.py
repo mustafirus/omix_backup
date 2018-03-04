@@ -14,10 +14,12 @@ confdir = '.conf'
 logdir = '.log'
 sync_lock = Lock()
 shutdown = Event()
-DEFAULT_INTERVAL = '1h'#'99999d'
-FAIL_INTERVAL = 3600 # swconds
-#TODO: check mbuffer installed
-#TODO: info:  remote sync send: from None cmd: None...
+DEFAULT_INTERVAL = '1d'  # '99999d'
+FAIL_INTERVAL = 3600  # seconds
+# TODO: check mbuffer installed
+# TODO: info:  remote sync send: from None cmd: None...
+# TODO: check time sync with target hosts max delta ~5 sec notify if not refuse to repl if >1h
+
 
 class Shutdown(Exception):
     pass
@@ -41,6 +43,8 @@ def _log_info(msg):
 
 
 def _log_returncode(code):
+    if not code:
+        return
     if code == 255:
         return
     if code > 0:
@@ -113,7 +117,7 @@ def remote_sync(send_host, send_cmd, recv_host, recv_cmd, log):
     with sync_lock:
         recv = remote_sync_cmd(recv_host, recv_cmd, log)
         if recv.returncode is not None:
-            _log_error("remote_sync: recv cant start see log")
+            _log_error("remote_sync: recv cant start see log {}; retcode: {}".format(log.name, recv.returncode))
             return False
         send = remote_sync_cmd(send_host, send_cmd, log)
         _log_info("remote sync wait for transfer: {}".format(recv_host))
@@ -155,6 +159,7 @@ class Dataset(object):
         (self.dest_host, self.dest_path) = dest.split(':')
         self.dest_host = host if self.dest_host == 'localhost' else self.dest_host
         self.dest_exists = None
+        self.origin = None
         self.snap = None
         self.start = None
         self.last = None
@@ -179,13 +184,13 @@ class Dataset(object):
         if self.start > self.next:
             self.next = self.start
         self.next_update = datetime.now().timestamp() + 3600
-        # _log_info("Dataset: {}".format(self))
+        # TODO: log next update _log_info("Dataset: {}".format(self))
         pass
 
     @staticmethod
     def _interval_to_timestamp(interval):
         if not interval:
-         interval = DEFAULT_INTERVAL
+            interval = DEFAULT_INTERVAL
         m = {'d': 86400, 'h': 3600, 'm': 60}
         q = int(interval[:-1] or 0)
         k = m.get(interval[-1]) or 0
@@ -235,12 +240,12 @@ class Dataset(object):
             self._log_cmd(log, cmd_send, cmd_recv)
         if self.src_host != self.dest_host:
             ret = remote_sync(send_host=self.src_host, send_cmd=cmd_send + mbuf_send,
-                               recv_host=self.dest_host, recv_cmd=mbuf_recv + cmd_recv,
-                               log=log)
+                              recv_host=self.dest_host, recv_cmd=mbuf_recv + cmd_recv,
+                              log=log)
         else:
             ret = remote_sync(send_host=None, send_cmd=None, recv_host=self.dest_host,
-                               recv_cmd=cmd_send + mbuf_loc + cmd_recv,
-                               log=log)
+                              recv_cmd=cmd_send + mbuf_loc + cmd_recv,
+                              log=log)
         if not ret:
             self.next = datetime.now().timestamp() + FAIL_INTERVAL
             # send notification
@@ -252,14 +257,15 @@ class Dataset(object):
                                    script="zfs list -rHtsnap -oname -Screation $1 | sed -e's/^.*@/@/'",
                                    args=[self.dest_path])
         dest_snaps = dest_snaps.strip().split('\n')
-        _log_info("dest_snaps: {}".format(dest_snaps))
+#        _log_info("dest_snaps: {}".format(dest_snaps))
         for snap in dest_snaps:
             if snap and check_fs(self.src_host, self.src_path + snap):
                 self.snap = snap
                 break
         pass
 
-    def _log_cmd(self, logfile, c1, c2):
+    @staticmethod
+    def _log_cmd(logfile, c1, c2):
         logfile.write("begin sync\n")
         logfile.write(c1 + "\n")
         logfile.write(c2 + "\n")
@@ -294,10 +300,8 @@ class Dataset(object):
                     return
                 self.update()
 
-#            _log_info("Dataset: {}".format(self))
             if not self.last:
                 self._find_last_snap()
-#            _log_info("Dataset: {}".format(self))
 
             self._snap()
             cmd_send = "zfs send -pv {}@omix_send -I {} ".format(self.src_path, self.snap)
@@ -346,14 +350,13 @@ def client_backup(client):
         next_run = None
         _log_info("next run for client: " + client['client'])
         for dataset in datasets:
-            # _log_info("run dataset: {}: {}".format(client['client'], dataset))
-            dataset.run()  # TODO periodicaly rerun _update for changes of interval
+            dataset.run()
             # TODO catch CalledProcessError retry in 10? min or try ping before run
             next_run = min(next_run, dataset.next) if next_run else dataset.next
             if shutdown.is_set():
                 return
 
-        for dataset in datasets:
+        for dataset in datasets:   # periodicaly rerun _update for changes of interval
             if datetime.now().timestamp() > dataset.next_update:
                 dataset.update()
 
@@ -419,7 +422,7 @@ origin=$(zfs get -Hpo value origin $dataset)
 #set -x
 omix_sync=$(echo "$snaps" | sed -ne 's/^.*@omix_sync.*$/@omix_sync/p')
 snap_first=$(echo "$snaps" | sed -ne '1 s/^.*@/@/p')
-#[ $origin = - ] && origin=
+[ $origin = - ] && origin=
 [ -z $omix_sync ] || snap_first=$omix_sync
 
 [ -n "$omix_sync" ] && omix_sync_time=$(zfs get -Hpo value creation $dataset@omix_sync) || omix_sync_time=0
@@ -445,7 +448,7 @@ free_up_port = r'''ss -tlnp | awk '$4~/\*:9000/ { print gensub(/^.*,pid=([0-9]*)
 | xargs -r kill;'''
 
 
-def signal_handler(signal, frame):
+def signal_handler(sig, frame):
     print('You pressed Ctrl+C!')
     shutdown.set()
 
