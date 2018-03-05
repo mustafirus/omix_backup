@@ -16,9 +16,11 @@ sync_lock = Lock()
 shutdown = Event()
 DEFAULT_INTERVAL = '1d'  # '99999d'
 FAIL_INTERVAL = 3600  # seconds
-# TODO: check mbuffer installed
+# TODO: check mbuffer,gawk installed
 # TODO: info:  remote sync send: from None cmd: None...
 # TODO: check time sync with target hosts max delta ~5 sec notify if not refuse to repl if >1h
+# TODO: check zfs version: modinfo zfs | sed -n 's/^version: *//p' > 0.7.3
+# TODO:   packaging.version.parse ("2.3.1") < packaging.version.parse("10.1.2")
 
 
 class Shutdown(Exception):
@@ -42,15 +44,15 @@ def _log_info(msg):
     print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "info: ", msg.strip())
 
 
-def _log_returncode(code):
+def _log_returncode(code, fname):
     if not code:
         return
     if code == 255:
         return
     if code > 0:
-        _log_error("remote_sync: something wrong see log")
+        _log_error("{}: something wrong; code: {}".format(fname, code))
     if code < 0:
-        _log_error("killed by signal: {}".format(code))
+        _log_error("{}: killed by signal: {}".format(fname, code))
 
 
 def loadconfig():
@@ -128,8 +130,8 @@ def remote_sync(send_host, send_cmd, recv_host, recv_cmd, log):
     send.wait()
     recv.wait()
 
-    _log_returncode(send.returncode)
-    _log_returncode(recv.returncode)
+    _log_returncode(send.returncode, "remote_sync send")
+    _log_returncode(recv.returncode, "remote_sync recv")
 
     return send.returncode == 0 and recv.returncode == 0
 
@@ -212,23 +214,23 @@ class Dataset(object):
 
     def _snap(self):
         if not check_fs(self.src_host, '{}@omix_send'.format(self.src_path)):
-            run(['ssh', "root@" + self.src_host, 'zfs snap {}@omix_send'.format(self.src_path)], check=True)
+            run(['ssh', "root@" + self.src_host, 'zfs snap -r {}@omix_send'.format(self.src_path)], check=True)
         return "@omix_send"
 
     def _del_snap_src(self):
         old_sync = '{}@omix_sync'.format(self.src_path)
         if check_fs(self.src_host, old_sync):
-            run(['ssh', "root@" + self.src_host, 'zfs destroy {}'.format(old_sync)], check=True)
+            run(['ssh', "root@" + self.src_host, 'zfs destroy -r {}'.format(old_sync)], check=True)
 
     def _del_snap_dest(self):
         old_sync = '{}@omix_sync'.format(self.dest_path)
         if check_fs(self.dest_host, old_sync):
-            run(['ssh', "root@" + self.dest_host, 'zfs destroy {}'.format(old_sync)], check=True)
+            run(['ssh', "root@" + self.dest_host, 'zfs destroy -r {}'.format(old_sync)], check=True)
 
     def _rename_snap(self):
         self._del_snap_src()
         self._del_snap_dest()
-        zfs_rename = 'zfs rename {fs}@omix_send {fs}@omix_sync'
+        zfs_rename = 'zfs rename -r {fs}@omix_send {fs}@omix_sync'
         run(['ssh', "root@" + self.dest_host, zfs_rename.format(fs=self.dest_path)], check=True)
         run(['ssh', "root@" + self.src_host, zfs_rename.format(fs=self.src_path)], check=True)
 
@@ -285,7 +287,7 @@ class Dataset(object):
             return
 
         with open(logfilename((self.client, os.path.basename(self.src_path))), 'w', buffering=1) as logfile:
-            cmd_recv = "zfs recv -uvF {}".format(self.dest_path)
+            cmd_recv = "zfs recv -suvF {}".format(self.dest_path)
             if check_cmd_is_running(self.dest_host, cmd_recv):
                 _log_info("sync client: {} fs: {} already runing: next try in 10 min"
                           .format(self.client, self.src_path))
@@ -304,8 +306,7 @@ class Dataset(object):
             #     self._find_last_snap()
 
             self._snap()
-            if self.dest_exists:
-                fromsnap = "-I @omix_sync"
+            fromsnap = "-I @omix_sync" if self.dest_exists else ""
             cmd_send = "zfs send -Rv {}@omix_send {} ".format(self.src_path, fromsnap)
             if not self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv, log=logfile):
                 return
