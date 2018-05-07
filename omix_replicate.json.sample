@@ -2,23 +2,30 @@
     {
         "client": "client1",
         "dest":   "omix_cloud",
+        "domain": "client1.bla",
         "vms": [
             {
-                "host": "pm1.client2.bla",
+                "host": "pm1",
                 "vmid": "1011002"
+            },
+            {
+                "host": "pm1",
+                "paths": ["rpool"],
+                "recursive": true
             }
         ]
     },
     {
         "client": "client2",
         "dest":   "localhost:backup/test/pm1",
+        "domain": "client2.bla",
         "vms": [
             {
-                "host": "pm1.client2.bla",
+                "host": "pm1",
                 "vmid": "101"
             },
             {
-                "host": "pm2.client2.bla",
+                "host": "pm2",
                 "vmid": "102"
             }
         ]
