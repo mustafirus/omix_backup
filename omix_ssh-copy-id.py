@@ -8,7 +8,7 @@ omix_cloud_dest = 'pm1.ssc.bla:rpool/misc/omixbackup'
 
 
 def loadconfig():
-    with open(".conf/omix_backup.json", 'r') as conffile:
+    with open("/etc/omix_replicate/omix_backup.json", 'r') as conffile:
         return json.load(conffile)
 
 def remote_script(host=None, script=None, args=None):
