@@ -1,0 +1,12 @@
+[Unit]
+Description=Omix Zfs Replicate
+
+[Service]
+ExecStartPre=/usr/local/sbin/omix_ssh-copy-id.py
+ExecStart=/usr/local/sbin/omix_rep.py
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=omix_rep
+
+[Install]
+WantedBy=multi-user.target
