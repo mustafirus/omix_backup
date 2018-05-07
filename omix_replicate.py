@@ -10,8 +10,10 @@ from time import sleep
 
 backup_config = list()
 omix_cloud_dest = 'pm1.ssc.bla:rpool/misc/omix-backup'
-confdir = '.conf'
-logdir = '.log'
+#confdir = '.conf'
+#logdir = '.log'
+confdir = '/etc/omix_replicate'
+logdir = '/var/log/omix_replicate'
 sync_lock = Lock()
 shutdown = Event()
 DEFAULT_INTERVAL = '1d'  # '99999d'
