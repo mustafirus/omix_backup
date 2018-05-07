@@ -1,6 +1,8 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 import json
+
 import subprocess
+from subprocess import Popen, run, PIPE
 
 omix_cloud_dest = 'pm1.ssc.bla:rpool/misc/omixbackup'
 
@@ -8,6 +10,12 @@ omix_cloud_dest = 'pm1.ssc.bla:rpool/misc/omixbackup'
 def loadconfig():
     with open(".conf/omix_backup.json", 'r') as conffile:
         return json.load(conffile)
+
+def remote_script(host=None, script=None, args=None):
+    shell = Popen(["ssh", "root@" + host, "bash", "-s", "--"] + (args or []),
+                  stdin=PIPE, universal_newlines=True)
+    shell.communicate(script)
+    return shell.returncode == 0
 
 
 
@@ -20,8 +28,14 @@ def start():
     for host in hosts:
         if host == 'localhost':
             continue
-        print 'Adding key to: ', host
-        subprocess.call(['ssh-copy-id', 'root@%s' % host])
+        print('Adding key to: ', host)
+        run(['ssh-copy-id', 'root@%s' % host])
+        if not remote_script(host, 'which nc'):
+            remote_script(host, 'apt-get -y install nc')
+        if not remote_script(host, 'which gawk'):
+            remote_script(host, 'apt-get -y install gawk')
+        if not remote_script(host, 'which mbuffer'):
+            remote_script(host, 'apt-get -y install mbuffer')
 
 
 if __name__ == "__main__":

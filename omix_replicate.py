@@ -16,9 +16,11 @@ sync_lock = Lock()
 shutdown = Event()
 DEFAULT_INTERVAL = '1d'  # '99999d'
 FAIL_INTERVAL = 3600  # seconds
-# TODO: check mbuffer installed
+# TODO backup <vmid>.conf
 # TODO: info:  remote sync send: from None cmd: None...
 # TODO: check time sync with target hosts max delta ~5 sec notify if not refuse to repl if >1h
+# TODO: check zfs version: modinfo zfs | sed -n 's/^version: *//p' > 0.7.3
+# TODO:   packaging.version.parse ("2.3.1") < packaging.version.parse("10.1.2")
 
 
 class Shutdown(Exception):
@@ -42,15 +44,15 @@ def _log_info(msg):
     print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "info: ", msg.strip())
 
 
-def _log_returncode(code):
+def _log_returncode(code, fname, logname):
     if not code:
         return
     if code == 255:
         return
     if code > 0:
-        _log_error("remote_sync: something wrong see log")
+        _log_error("{}: something wrong; code: {}; log: {}".format(fname, code, logname))
     if code < 0:
-        _log_error("killed by signal: {}".format(code))
+        _log_error("{}: killed by signal: {}; log: {}".format(fname, code, logname))
 
 
 def loadconfig():
@@ -109,27 +111,32 @@ def remote_sync_cmd(host, cmd, log):
 
 
 def remote_sync(send_host, send_cmd, recv_host, recv_cmd, log):
-    if send_host and send_cmd:
+    if log:
         _log_info("remote sync send: from {} cmd: {}...".format(send_host, send_cmd))
-    if recv_host and recv_cmd:
         _log_info("remote sync recv: to   {} cmd: {}...".format(recv_host, recv_cmd))
+    # if send_host and send_cmd:
+    # if recv_host and recv_cmd:
 
     with sync_lock:
         recv = remote_sync_cmd(recv_host, recv_cmd, log)
         if recv.returncode is not None:
-            _log_error("remote_sync: recv cant start see log {}; retcode: {}".format(log.name, recv.returncode))
+            log and _log_error("remote_sync: recv cant start see log {}; retcode: {}".format(log.name, recv.returncode))
             return False
         send = remote_sync_cmd(send_host, send_cmd, log)
-        _log_info("remote sync wait for transfer: {}".format(recv_host))
-        remote_script(host=recv_host, script=timeout_port + free_up_port, args=["30"])
-        _log_info("remote sync transfer begun: {}".format(recv_host))
+        log and _log_info("remote sync wait for transfer: {} -> {}".format(send_host, recv_host))
+        ret = remote_script(host=recv_host, script=timeout_port + free_up_port + exit_code,
+                            args=["30"]).strip()
+        if log:
+            if ret == 'ok':
+                _log_info("remote sync transfer begun: {} -> {}".format(send_host, recv_host))
+            else:
+                _log_error("remote sync transfer failed: {} -> {}".format(send_host, recv_host))
 
-        # TODO test close logfile at this point
     send.wait()
     recv.wait()
 
-    _log_returncode(send.returncode)
-    _log_returncode(recv.returncode)
+    _log_returncode(send.returncode, "remote_sync send", log.name if log else None)
+    _log_returncode(recv.returncode, "remote_sync recv", log.name if log else None)
 
     return send.returncode == 0 and recv.returncode == 0
 
@@ -184,7 +191,11 @@ class Dataset(object):
         if self.start > self.next:
             self.next = self.start
         self.next_update = datetime.now().timestamp() + 3600
-        # TODO: log next update _log_info("Dataset: {}".format(self))
+
+        # log next update time
+        _log_info("Next update for: {}:{} on: {}".
+                  format(self.src_host, self.src_path,
+                         datetime.fromtimestamp(self.next).strftime('%Y-%m-%d %H:%M:%S')))
         pass
 
     @staticmethod
@@ -203,17 +214,32 @@ class Dataset(object):
         if self.src_host == self.dest_host:
             return True
 
-        return remote_sync(
+        _log_info("run test connection: {} -> {}".format(self.src_host, self.dest_host))
+        ret = remote_sync(
                 send_host=self.src_host,
                 send_cmd=cmd_test_send,
                 recv_host=self.dest_host,
                 recv_cmd=cmd_test_recv,
                 log=None)
+        if ret:
+            _log_info("run connection passed: {} -> {}".format(self.src_host, self.dest_host))
+        else:
+            _log_info("run connection failed: {} -> {}".format(self.src_host, self.dest_host))
+        return ret
 
     def _snap(self):
         if not check_fs(self.src_host, '{}@omix_send'.format(self.src_path)):
             run(['ssh', "root@" + self.src_host, 'zfs snap {}@omix_send'.format(self.src_path)], check=True)
         return "@omix_send"
+
+    def _del_snap_send(self):
+        old_send = '{}@omix_send'.format(self.src_path)
+        if check_fs(self.src_host, old_send):
+            run(['ssh', "root@" + self.src_host, 'zfs destroy {}'.format(old_send)], check=True)
+        old_send = '{}@omix_send'.format(self.dest_path)
+        if check_fs(self.dest_host, old_send):
+            run(['ssh', "root@" + self.dest_host, 'zfs destroy {}'.format(old_send)], check=True)
+
 
     def _del_snap_src(self):
         old_sync = '{}@omix_sync'.format(self.src_path)
@@ -251,13 +277,20 @@ class Dataset(object):
             # send notification
         return ret
 
+    def _get_resume_token(self):
+        resume_token = remote_script(host=self.dest_host,
+                                   script="zfs get -Hovalue receive_resume_token $1",
+                                   args=[self.dest_path]).strip()
+        return "" if resume_token == "-" else resume_token
+
     def _find_last_snap(self):
         # TODO rewite for checking omix_sync on src and dest
         dest_snaps = remote_script(host=self.dest_host,
-                                   script="zfs list -rHtsnap -oname -Screation $1 | sed -e's/^.*@/@/'",
+                                   script="zfs list -rd1 -Htsnap -oname -Screation $1 | sed -e's/^.*@/@/'",
                                    args=[self.dest_path])
         dest_snaps = dest_snaps.strip().split('\n')
 #        _log_info("dest_snaps: {}".format(dest_snaps))
+        self.snap = None
         for snap in dest_snaps:
             if snap and check_fs(self.src_host, self.src_path + snap):
                 self.snap = snap
@@ -285,7 +318,8 @@ class Dataset(object):
             return
 
         with open(logfilename((self.client, os.path.basename(self.src_path))), 'w', buffering=1) as logfile:
-            cmd_recv = "zfs recv -uvF {}".format(self.dest_path)
+            _log_info("run begin transfer: {}:{} -> {}".format(self.src_host, self.src_path, self.dest_host))
+            cmd_recv = "zfs recv -suvF {}".format(self.dest_path)
             if check_cmd_is_running(self.dest_host, cmd_recv):
                 _log_info("sync client: {} fs: {} already runing: next try in 10 min"
                           .format(self.client, self.src_path))
@@ -295,20 +329,27 @@ class Dataset(object):
                 fromorigin = "-I {}".format(self.origin) if self.origin else ""
                 if not self.snap:
                     self.snap = self._snap()
-                cmd_send = "zfs send -pv {}{} {}".format(self.src_path, self.snap, fromorigin)
+                cmd_send = "zfs send -Lecpv {}{} {}".format(self.src_path, self.snap, fromorigin)
                 if not self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv, log=logfile):
                     return
                 self.update()
 
-            if not self.last:
-                self._find_last_snap()
-
-            self._snap()
-            cmd_send = "zfs send -pv {}@omix_send -I {} ".format(self.src_path, self.snap)
-            if not self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv, log=logfile):
+            resume_token = self._get_resume_token()
+            if resume_token:
+                cmd_send = "zfs send -t {}".format(resume_token)
+                self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv, log=logfile)
                 return
-            self._rename_snap()
-            self.update()
+            else:
+                if not self.last:
+                    self._del_snap_send()
+                    self._find_last_snap()
+                self._snap()
+                snap = "-I {} ".format(self.snap) if self.snap else ''
+                cmd_send = "zfs send -Lecpv {}@omix_send {} ".format(self.src_path, snap)
+                if not self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv, log=logfile):
+                    return
+                self._rename_snap()
+                self.update()
 
 
 def client_backup(client):
@@ -316,31 +357,47 @@ def client_backup(client):
 
     dest = client['dest'] if client['dest'] != 'omix_cloud' else omix_cloud_dest
     datasets = []
-# TODO check nc,mbuffer installed
-# TODO backup <vmid>.conf
+
     for src in client["src"]:
-        path = src.get("path")
-        vmid = src.get("vmid")
+        paths = src.get("paths")
+        vmids = src.get("vmids")
+        recursive = src.get("recursive", False)
         host = ".".join((src['host'], client['domain']))
-        if path:
-            datasets.append(Dataset(
-                client=client,
-                host=host,
-                path=path,
-                dest='/'.join((dest, client['client'], path))
-            ))
-            pass
-        elif vmid:
-            paths = remote_script(host=host, script=get_vm_disks_script, args=[str(vmid)]).strip()
-            paths = paths.split('\n') if paths else []
+
+        if paths:
             for path in paths:
-                datasets.append(Dataset(
-                    client=client,
-                    host=host,
-                    path=path,
-                    dest='/'.join((dest, client['client'], vmid, os.path.basename(path)))
-                ))
-                pass
+                if recursive:
+                    paths2 = remote_script(host=host,
+                                           script="zfs list -rHo name $1",
+                                           args=[path]).strip()
+                    paths2 = paths2.split('\n')
+                    for path2 in paths2:
+                        datasets.append(Dataset(
+                            client=client,
+                            host=host,
+                            path=path2,
+                            dest='/'.join((dest, client['client'], host, path2))
+                        ))
+                else:
+                    datasets.append(Dataset(
+                        client=client,
+                        host=host,
+                        path=path,
+                        dest='/'.join((dest, client['client'], path))
+                    ))
+            pass
+        elif vmids:
+            for vmid in vmids:
+                paths = remote_script(host=host, script=get_vm_disks_script, args=[str(vmid)]).strip()
+                paths = paths.split('\n') if paths else []
+                for path in paths:
+                    datasets.append(Dataset(
+                        client=client,
+                        host=host,
+                        path=path,
+                        dest='/'.join((dest, client['client'], vmid, os.path.basename(path)))
+                    ))
+            pass
         else:
             _log_error("unknown backup src: " + str(src))
     if len(datasets) == 0:
@@ -417,7 +474,7 @@ s/\(.*\)/pvesm path \1 /
 
 get_dataset_params = r'''
 dataset=$1
-snaps=$(zfs list -rHptsnap -o name -s creation $dataset)
+snaps=$(zfs list -rd1 -Hptsnap -o name -s creation $dataset)
 origin=$(zfs get -Hpo value origin $dataset)
 #set -x
 omix_sync=$(echo "$snaps" | sed -ne 's/^.*@omix_sync.*$/@omix_sync/p')
@@ -445,7 +502,8 @@ EOF
 '''
 timeout_port = r'''T=$1+1; while ((T-=1)); do ss -tlnp | grep -q ' *:9000 ' || break; sleep 1; done; '''
 free_up_port = r'''ss -tlnp | awk '$4~/\*:9000/ { print gensub(/^.*,pid=([0-9]*),.*$/,"\\1","g",$6)}' \
-| xargs -r kill;'''
+| xargs -r kill; '''
+exit_code = r'''[ "$T" -ne "0" ] && echo ok'''
 
 
 def signal_handler(sig, frame):
