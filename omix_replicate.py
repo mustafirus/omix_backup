@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -uO
 from datetime import datetime
 import json
 import os
@@ -23,6 +23,7 @@ FAIL_INTERVAL = 3600  # seconds
 # TODO: check time sync with target hosts max delta ~5 sec notify if not refuse to repl if >1h
 # TODO: check zfs version: modinfo zfs | sed -n 's/^version: *//p' > 0.7.3
 # TODO:   packaging.version.parse ("2.3.1") < packaging.version.parse("10.1.2")
+# TODO: add datetime to logfile
 
 
 class Shutdown(Exception):

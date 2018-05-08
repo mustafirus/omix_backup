@@ -2,8 +2,7 @@
 Description=Omix Zfs Replicate
 
 [Service]
-ExecStartPre=/usr/local/sbin/omix_ssh-copy-id.py
-ExecStart=/usr/local/sbin/omix_rep.py
+ExecStart=/usr/local/sbin/omix_replicate.py
 StandardOutput=syslog
 StandardError=syslog
 SyslogIdentifier=omix_rep
