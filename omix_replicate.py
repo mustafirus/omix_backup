@@ -23,7 +23,9 @@ FAIL_INTERVAL = 3600  # seconds
 # TODO: check time sync with target hosts max delta ~5 sec notify if not refuse to repl if >1h
 # TODO: check zfs version: modinfo zfs | sed -n 's/^version: *//p' > 0.7.3
 # TODO:   packaging.version.parse ("2.3.1") < packaging.version.parse("10.1.2")
-# TODO: add datetime to logfile
+# TODO: add datetime to logfile: make logfie filelike object which is add timestamp to each string
+# TODO: check free mem 1G
+# TODO: resume send verbose -tv
 
 
 class Shutdown(Exception):
@@ -38,13 +40,14 @@ class Dummy(object):
     def wait():
         return 0
 
-
+# datetime.now().strftime("%Y-%m-%d %H:%M:%S"), not need
+# syslog add timestamp
 def _log_error(msg):
-    print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "error: ", msg.strip())
+    print("error: ", msg.strip())
 
 
 def _log_info(msg):
-    print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "info: ", msg.strip())
+    print("info: ", msg.strip())
 
 
 def _log_returncode(code, fname, logname):
@@ -275,9 +278,10 @@ class Dataset(object):
             ret = remote_sync(send_host=None, send_cmd=None, recv_host=self.dest_host,
                               recv_cmd=cmd_send + mbuf_loc + cmd_recv,
                               log=log)
+        if log:
+            self._log_result(log, ret)
         if not ret:
             self.next = datetime.now().timestamp() + FAIL_INTERVAL
-            # send notification
         return ret
 
     def _get_resume_token(self):
@@ -305,6 +309,14 @@ class Dataset(object):
         logfile.write("begin sync\n")
         logfile.write(c1 + "\n")
         logfile.write(c2 + "\n")
+        logfile.flush()
+
+    @staticmethod
+    def _log_result(logfile, ret):
+        if ret:
+            logfile.write("end sync - OK\n")
+        else:
+            logfile.write("ERROR sync\n")
         logfile.flush()
 
     def run(self):
