@@ -26,6 +26,7 @@ FAIL_INTERVAL = 3600  # seconds
 # TODO: add datetime to logfile: make logfie filelike object which is add timestamp to each string
 # TODO: check free mem 1G
 # TODO: resume send verbose -tv
+# BUG: first send snap if omix_send - must be omix_sync
 
 
 class Shutdown(Exception):
@@ -347,6 +348,8 @@ class Dataset(object):
                 cmd_send = "zfs send -Lecpv {}{} {}".format(self.src_path, self.snap, fromorigin)
                 if not self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv, log=logfile):
                     return
+                if self.snap == "@omix_send":
+                    self._rename_snap()
                 self.update()
 
             resume_token = self._get_resume_token()
