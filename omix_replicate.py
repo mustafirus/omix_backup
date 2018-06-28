@@ -332,15 +332,15 @@ class Dataset(object):
         # test connection
         if not self._test():
             return
-
+        # TODO: check_cmd_is_running must not generate logfile - move it out of "with open"
+        cmd_recv = "zfs recv -suvF {}".format(self.dest_path)
+        if check_cmd_is_running(self.dest_host, cmd_recv):
+            _log_info("sync client: {} fs: {} already runing: next try in 1 hour"
+                      .format(self.client, self.src_path))
+            self.next = datetime.now().timestamp() + 3600
+            return
         with open(logfilename((self.client, os.path.basename(self.src_path))), 'w', buffering=1) as logfile:
             _log_info("run begin transfer: {}:{} -> {}".format(self.src_host, self.src_path, self.dest_host))
-            cmd_recv = "zfs recv -suvF {}".format(self.dest_path)
-            if check_cmd_is_running(self.dest_host, cmd_recv):
-                _log_info("sync client: {} fs: {} already runing: next try in 10 min"
-                          .format(self.client, self.src_path))
-                self.next = datetime.now().timestamp() + 600
-                return
             if not self.dest_exists:
                 fromorigin = "-I {}".format(self.origin) if self.origin else ""
                 if not self.snap:
