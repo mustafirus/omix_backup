@@ -354,7 +354,7 @@ class Dataset(object):
 
             resume_token = self._get_resume_token()
             if resume_token:
-                cmd_send = "zfs send -t {}".format(resume_token)
+                cmd_send = "zfs send -v -t {}".format(resume_token)
                 self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv, log=logfile)
                 return
             else:
