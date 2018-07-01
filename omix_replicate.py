@@ -183,21 +183,27 @@ class Dataset(object):
         self.update()
 
     def update(self):
+        # TODO: may be ping src and dest
         self.dest_exists = check_fs(self.dest_host, self.dest_path)
         if not self.dest_exists:
             self._del_sync_src()
         params = remote_script(host=self.src_host, script=get_dataset_params, args=[self.src_path])
-        params = json.loads(params)  # exception on wrong params
-        self.origin = params["origin"]  # from snap
-        self.snap = params["snap_first"]  # from snap
-        self.start = datetime.strptime(params["omix_sync_start"], "%Y-%m-%d %H:%M").timestamp()\
-            if params["omix_sync_start"] else 0
-        self.last = params["omix_sync_time"]
-        self.interval = self._interval_to_timestamp(params["omix_sync_interval"])
-        self.next = self.last + self.interval  # TODO make daily at night
-        if self.start > self.next:
-            self.next = self.start
-        self.next_update = datetime.now().timestamp() + 3600
+        if params:
+            params = json.loads(params)  # exception on wrong params
+            self.origin = params["origin"]  # from snap
+            self.snap = params["snap_first"]  # from snap
+            self.start = datetime.strptime(params["omix_sync_start"], "%Y-%m-%d %H:%M").timestamp()\
+                if params["omix_sync_start"] else 0
+            self.last = params["omix_sync_time"]
+            self.interval = self._interval_to_timestamp(params["omix_sync_interval"])
+            self.next = self.last + self.interval  # TODO make daily at night
+            if self.start > self.next:
+                self.next = self.start
+            self.next_update = datetime.now().timestamp() + 3600
+        else:
+            # connection error
+            self.next = datetime.now().timestamp() + 600
+            self.next_update = datetime.now().timestamp() + 600
 
         # log next update time
         _log_info("Next update for: {}:{} on: {}".
