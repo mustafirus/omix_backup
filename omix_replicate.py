@@ -185,7 +185,7 @@ class Dataset(object):
     def update(self):
         self.dest_exists = check_fs(self.dest_host, self.dest_path)
         if not self.dest_exists:
-            self._del_snap_src()
+            self._del_sync_src()
         params = remote_script(host=self.src_host, script=get_dataset_params, args=[self.src_path])
         params = json.loads(params)  # exception on wrong params
         self.origin = params["origin"]  # from snap
@@ -247,23 +247,25 @@ class Dataset(object):
         if check_fs(self.dest_host, old_send):
             run(['ssh', "root@" + self.dest_host, 'zfs destroy {}'.format(old_send)], check=True)
 
-
-    def _del_snap_src(self):
+    def _del_sync_src(self):
         old_sync = '{}@omix_sync'.format(self.src_path)
         if check_fs(self.src_host, old_sync):
             run(['ssh', "root@" + self.src_host, 'zfs destroy {}'.format(old_sync)], check=True)
 
-    def _del_snap_dest(self):
+    def _del_sync_dest(self):
         old_sync = '{}@omix_sync'.format(self.dest_path)
         if check_fs(self.dest_host, old_sync):
             run(['ssh', "root@" + self.dest_host, 'zfs destroy {}'.format(old_sync)], check=True)
 
     def _rename_snap(self):
-        self._del_snap_src()
-        self._del_snap_dest()
+        self._del_sync_src()
+        self._del_sync_dest()
         zfs_rename = 'zfs rename {fs}@omix_send {fs}@omix_sync'
         run(['ssh', "root@" + self.dest_host, zfs_rename.format(fs=self.dest_path)], check=True)
         run(['ssh', "root@" + self.src_host, zfs_rename.format(fs=self.src_path)], check=True)
+        _log_info("Renamed omix_send to omix_sync for: {}:{}, {}:{}".format(
+            self.src_host, self.src_path,
+            self.dest_host, self.dest_path))
 
     def _sync(self, cmd_send, cmd_recv, log):
         mbuf_send = "| mbuffer -q -s 128k -m 1G -O {}:9000 -W 300".format(self.dest_host)
@@ -282,7 +284,7 @@ class Dataset(object):
         if log:
             self._log_result(log, ret)
         if not ret:
-            self.next = datetime.now().timestamp() + FAIL_INTERVAL
+            self.next = datetime.now().timestamp() + 60
         return ret
 
     def _get_resume_token(self):
@@ -333,6 +335,7 @@ class Dataset(object):
 
         # test connection
         if not self._test():
+            self.next = datetime.now().timestamp() + FAIL_INTERVAL
             return
         # TODO: check_cmd_is_running must not generate logfile - move it out of "with open"
         cmd_recv = "zfs recv -suvF {}".format(self.dest_path)
