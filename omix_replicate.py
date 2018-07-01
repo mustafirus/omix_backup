@@ -3,7 +3,7 @@ from datetime import datetime
 import json
 import os
 from signal import signal, SIGINT, pause
-from subprocess import PIPE, STDOUT, Popen, DEVNULL, run
+from subprocess import PIPE, STDOUT, Popen, DEVNULL, run, CalledProcessError
 import threading
 from threading import Lock, Event
 from time import sleep
@@ -430,7 +430,11 @@ def client_backup(client):
         next_run = None
         _log_info("next run for client: " + client['client'])
         for dataset in datasets:
-            dataset.run()
+            try:
+                dataset.run()
+            except CalledProcessError as e:
+                _log_error("Command error: {}".format(e.cmd))
+
             # TODO catch CalledProcessError retry in 10? min or try ping before run
             next_run = min(next_run, dataset.next) if next_run else dataset.next
             if shutdown.is_set():
