@@ -25,7 +25,7 @@ FAIL_INTERVAL = 3600  # seconds
 # TODO:   packaging.version.parse ("2.3.1") < packaging.version.parse("10.1.2")
 # TODO: add datetime to logfile: make logfie filelike object which is add timestamp to each string
 # TODO: check free mem 1G
-# TODO: resume send verbose -tv
+# DONE: resume send verbose -tv
 # BUG: first send snap if omix_send - must be omix_sync
 
 
@@ -307,17 +307,19 @@ class Dataset(object):
 
     @staticmethod
     def _log_cmd(logfile, c1, c2):
-        logfile.write("begin sync\n")
+        dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        logfile.write("begin sync: {}\n".format(dt))
         logfile.write(c1 + "\n")
         logfile.write(c2 + "\n")
         logfile.flush()
 
     @staticmethod
     def _log_result(logfile, ret):
+        dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if ret:
-            logfile.write("end sync - OK\n")
+            logfile.write("end sync - OK: {}\n".format(dt))
         else:
-            logfile.write("ERROR sync\n")
+            logfile.write("ERROR sync: {}\n".format(dt))
         logfile.flush()
 
     def run(self):
