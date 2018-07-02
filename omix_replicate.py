@@ -195,6 +195,8 @@ class Dataset(object):
             self.start = datetime.strptime(params["omix_sync_start"], "%Y-%m-%d %H:%M").timestamp()\
                 if params["omix_sync_start"] else 0
             self.last = params["omix_sync_time"]
+            if not check_fs(self.dest_host, '{}@omix_sync'.format(self.dest_path)):
+                self.last = 0
             self.interval = self._interval_to_timestamp(params["omix_sync_interval"])
             self.next = self.last + self.interval  # TODO make daily at night
             if self.start > self.next:
@@ -224,6 +226,13 @@ class Dataset(object):
         cmd_test_send = "nc -zw10 {} 9000".format(self.dest_host)
         cmd_test_recv = free_up_port + "nc -w10 -lp 9000"
 
+        try:
+            run(['nc', '-z', self.src_host, '22'], check=True)
+            run(['nc', '-z', self.dest_host, '22'], check=True)
+        except CalledProcessError as e:
+            _log_error("Host unreachable: {}".format(e.cmd[2]))
+            return False
+
         if self.src_host == self.dest_host:
             return True
 
@@ -237,7 +246,7 @@ class Dataset(object):
         if ret:
             _log_info("run connection passed: {} -> {}".format(self.src_host, self.dest_host))
         else:
-            _log_info("run connection failed: {} -> {}".format(self.src_host, self.dest_host))
+            _log_error("run connection failed: {} -> {}".format(self.src_host, self.dest_host))
         return ret
 
     def _snap(self):
@@ -258,15 +267,18 @@ class Dataset(object):
         if check_fs(self.src_host, old_sync):
             run(['ssh', "root@" + self.src_host, 'zfs destroy {}'.format(old_sync)], check=True)
 
-    def _del_sync_dest(self):
-        old_sync = '{}@omix_sync'.format(self.dest_path)
-        if check_fs(self.dest_host, old_sync):
-            run(['ssh', "root@" + self.dest_host, 'zfs destroy {}'.format(old_sync)], check=True)
+    # def _del_sync_dest(self):
+    #     old_sync = '{}@omix_sync'.format(self.dest_path)
+    #     if check_fs(self.dest_host, old_sync):
+    #         run(['ssh', "root@" + self.dest_host, 'zfs destroy {}'.format(old_sync)], check=True)
 
     def _rename_snap(self):
-        self._del_sync_src()
-        self._del_sync_dest()
-        zfs_rename = 'zfs rename {fs}@omix_send {fs}@omix_sync'
+        # self._del_sync_src()
+        # self._del_sync_dest()
+        zfs_rename = \
+            'if zfs list {fs}@omix_prev >/dev/null 2>&1; then zfs destroy {fs}@omix_prev; fi' \
+            'zfs rename {fs}@omix_sync {fs}@omix_prev\n' \
+            'zfs rename {fs}@omix_send {fs}@omix_sync\n'
         run(['ssh', "root@" + self.dest_host, zfs_rename.format(fs=self.dest_path)], check=True)
         run(['ssh', "root@" + self.src_host, zfs_rename.format(fs=self.src_path)], check=True)
         _log_info("Renamed omix_send to omix_sync for: {}:{}, {}:{}".format(
@@ -366,8 +378,11 @@ class Dataset(object):
             resume_token = self._get_resume_token()
             if resume_token:
                 cmd_send = "zfs send -v -t {}".format(resume_token)
-                self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv, log=logfile)
-                return
+                if not self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv, log=logfile):
+                    return
+                if self.snap == "@omix_send":
+                    self._rename_snap()
+                self.update()
             else:
                 if not self.last:
                     self._del_snap_send()
