@@ -182,6 +182,11 @@ class Dataset(object):
         self.next_update = None
         self.update()
 
+    def _log_next_sync(self):
+        _log_info("Next sync for: {}:{} on: {}".
+                  format(self.src_host, self.src_path,
+                         datetime.fromtimestamp(self.next).strftime('%Y-%m-%d %H:%M:%S')))
+
     def update(self):
         # TODO: may be ping src and dest
         self.dest_exists = check_fs(self.dest_host, self.dest_path)
@@ -195,7 +200,9 @@ class Dataset(object):
             self.start = datetime.strptime(params["omix_sync_start"], "%Y-%m-%d %H:%M").timestamp()\
                 if params["omix_sync_start"] else 0
             self.last = params["omix_sync_time"]
-            if not check_fs(self.dest_host, '{}@omix_sync'.format(self.dest_path)):
+            if self.last == 0:
+                self._del_sync_dest()
+            elif not check_fs(self.dest_host, '{}@omix_sync'.format(self.dest_path)):
                 self.last = 0
             self.interval = self._interval_to_timestamp(params["omix_sync_interval"])
             self.next = self.last + self.interval  # TODO make daily at night
@@ -207,10 +214,11 @@ class Dataset(object):
             self.next = datetime.now().timestamp() + 600
             self.next_update = datetime.now().timestamp() + 600
 
-        # log next update time
-        _log_info("Next update for: {}:{} on: {}".
-                  format(self.src_host, self.src_path,
-                         datetime.fromtimestamp(self.next).strftime('%Y-%m-%d %H:%M:%S')))
+        # log next sync time
+        self._log_next_sync()
+        # _log_info("Next sync for: {}:{} on: {}".
+        #           format(self.src_host, self.src_path,
+        #                  datetime.fromtimestamp(self.next).strftime('%Y-%m-%d %H:%M:%S')))
         pass
 
     @staticmethod
@@ -267,10 +275,10 @@ class Dataset(object):
         if check_fs(self.src_host, old_sync):
             run(['ssh', "root@" + self.src_host, 'zfs destroy {}'.format(old_sync)], check=True)
 
-    # def _del_sync_dest(self):
-    #     old_sync = '{}@omix_sync'.format(self.dest_path)
-    #     if check_fs(self.dest_host, old_sync):
-    #         run(['ssh', "root@" + self.dest_host, 'zfs destroy {}'.format(old_sync)], check=True)
+    def _del_sync_dest(self):
+        old_sync = '{}@omix_sync'.format(self.dest_path)
+        if check_fs(self.dest_host, old_sync):
+            run(['ssh', "root@" + self.dest_host, 'zfs destroy {}'.format(old_sync)], check=True)
 
     def _rename_snap(self):
         # self._del_sync_src()
@@ -303,6 +311,10 @@ class Dataset(object):
             self._log_result(log, ret)
         if not ret:
             self.next = datetime.now().timestamp() + 60
+            self._log_next_sync()
+            # _log_info("Next sync for: {}:{} on: {}".
+            #           format(self.src_host, self.src_path,
+            #                  datetime.fromtimestamp(self.next).strftime('%Y-%m-%d %H:%M:%S')))
         return ret
 
     def _get_resume_token(self):
@@ -354,6 +366,7 @@ class Dataset(object):
         # test connection
         if not self._test():
             self.next = datetime.now().timestamp() + FAIL_INTERVAL
+            self._log_next_sync()
             return
         # TODO: check_cmd_is_running must not generate logfile - move it out of "with open"
         cmd_recv = "zfs recv -suvF {}".format(self.dest_path)
@@ -361,6 +374,7 @@ class Dataset(object):
             _log_info("sync client: {} fs: {} already runing: next try in 1 hour"
                       .format(self.client, self.src_path))
             self.next = datetime.now().timestamp() + 3600
+            self._log_next_sync()
             return
         with open(logfilename((self.client, os.path.basename(self.src_path))), 'w', buffering=1) as logfile:
             _log_info("run begin transfer: {}:{} -> {}".format(self.src_host, self.src_path, self.dest_host))
