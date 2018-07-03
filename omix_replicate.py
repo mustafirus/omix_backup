@@ -285,7 +285,7 @@ class Dataset(object):
         # self._del_sync_dest()
         zfs_rename = \
             'if zfs list {fs}@omix_prev >/dev/null 2>&1; then zfs destroy {fs}@omix_prev; fi\n' \
-            'zfs rename {fs}@omix_sync {fs}@omix_prev\n' \
+            'if zfs list {fs}@omix_sync >/dev/null 2>&1; then zfs rename {fs}@omix_sync {fs}@omix_prev; fi\n' \
             'zfs rename {fs}@omix_send {fs}@omix_sync\n'
         run(['ssh', "root@" + self.dest_host, zfs_rename.format(fs=self.dest_path)], check=True)
         run(['ssh', "root@" + self.src_host, zfs_rename.format(fs=self.src_path)], check=True)
