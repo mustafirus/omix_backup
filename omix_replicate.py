@@ -324,7 +324,6 @@ class Dataset(object):
         return "" if resume_token == "-" else resume_token
 
     def _find_last_snap(self):
-        # TODO rewite for checking omix_sync on src and dest
         dest_snaps = remote_script(host=self.dest_host,
                                    script="zfs list -rd1 -Htsnap -oname -Screation $1 | sed -e's/^.*@/@/'",
                                    args=[self.dest_path])
@@ -335,8 +334,9 @@ class Dataset(object):
             if snap and check_fs(self.src_host, self.src_path + snap):
                 self.snap = snap
                 break
-        if not self.snap:
-            self.snap = self.origin if self.origin else None
+        # if not self.snap:
+        #     self.snap = self.origin if self.origin else None
+        # must destroy cloned fs
         pass
 
     @staticmethod
@@ -403,6 +403,11 @@ class Dataset(object):
                 if not self.last:
                     self._del_snap_send()
                     self._find_last_snap()
+                if not self.snap and self.origin:
+                    _log_error("you must destroy cloned dataset: {}:{}".format(self.dest_host, self.dest_path))
+                    self.next = datetime.now().timestamp() + 600
+                    self._log_next_sync()
+                    return
                 self._snap()
                 snap = "-I {} ".format(self.snap) if self.snap else ''
                 cmd_send = "zfs send -Lecpv {}@omix_send {} ".format(self.src_path, snap)
