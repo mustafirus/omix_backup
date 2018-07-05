@@ -126,6 +126,7 @@ def remote_sync(send_host, send_cmd, recv_host, recv_cmd, log):
 
     with sync_lock:
         recv = remote_sync_cmd(recv_host, recv_cmd, log)
+        sleep(2)
         if recv.returncode is not None:
             log and _log_error("remote_sync: recv cant start see log {}; retcode: {}".format(log.name, recv.returncode))
             return False
@@ -231,9 +232,6 @@ class Dataset(object):
         return q*k
 
     def _test(self):
-        cmd_test_send = "nc -zw10 {} 9000".format(self.dest_host)
-        cmd_test_recv = free_up_port + "nc -w10 -lp 9000"
-
         try:
             run(['nc', '-z', self.src_host, '22'], check=True)
             run(['nc', '-z', self.dest_host, '22'], check=True)
@@ -245,6 +243,8 @@ class Dataset(object):
             return True
 
         _log_info("run test connection: {} -> {}".format(self.src_host, self.dest_host))
+        cmd_test_send = "nc -zw10 {} 9000".format(self.dest_host)
+        cmd_test_recv = free_up_port + "nc -w10 -lp 9000"
         ret = remote_sync(
                 send_host=self.src_host,
                 send_cmd=cmd_test_send,
@@ -335,6 +335,8 @@ class Dataset(object):
             if snap and check_fs(self.src_host, self.src_path + snap):
                 self.snap = snap
                 break
+        if not self.snap:
+            self.snap = self.origin if self.origin else None
         pass
 
     @staticmethod
