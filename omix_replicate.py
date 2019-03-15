@@ -1,21 +1,24 @@
 #!/usr/bin/python3 -uO
+import re
+from _signal import SIGTERM
 from datetime import datetime
 import json
 import os
+from json import JSONDecodeError
 from signal import signal, SIGINT, pause
 from subprocess import PIPE, STDOUT, Popen, DEVNULL, run, CalledProcessError, TimeoutExpired
 import threading
 from threading import Lock, Event
 from time import sleep
 
-backup_config = list()
+# backup_config = list()
 omix_cloud_dest = 'pm1.ssc.bla:rpool/misc/omix-backup'
-# confdir = '.conf'
-# logdir = '.log'
-confdir = '/etc/omix_replicate'
-logdir = '/var/log/omix_replicate'
+confdir = '.conf'
+logdir = '.log'
+# confdir = '/etc/omix_replicate'
+# logdir = '/var/log/omix_replicate'
 sync_lock = Lock()
-shutdown = Event()
+client_threads = list()
 DEFAULT_INTERVAL = '1d'  # '99999d'
 FAIL_INTERVAL = 600  # seconds
 # DONE: backup <vmid>.conf
@@ -26,9 +29,9 @@ FAIL_INTERVAL = 600  # seconds
 # TODO: check free mem 1G
 
 
-class Shutdown(Exception):
-    pass
-
+# class Shutdown(Exception):
+#     pass
+#
 
 class Dummy(object):
     def __init__(self):
@@ -41,12 +44,21 @@ class Dummy(object):
 
 # datetime.now().strftime("%Y-%m-%d %H:%M:%S"), not need
 # syslog add timestamp
+TOPICPREFIX='omix/rep/'
+def set_state(topic, result, msg=None):
+    topic = TOPICPREFIX + topic
+    if msg:
+        if result == 'error':
+            _log_error(msg)
+        else:
+            _log_info(msg)
+
 def _log_error(msg):
-    print("error: ", msg.strip())
+    print("error: ", str(msg).strip())
 
 
 def _log_info(msg):
-    print("info: ", msg.strip())
+    print("info: ", str(msg).strip())
 
 
 def _log_returncode(code, fname, logname):
@@ -62,15 +74,20 @@ def _log_returncode(code, fname, logname):
 
 def loadconfig():
     with open(confdir+"/omix_backup.json", 'r') as conffile:
-        global backup_config
-        backup_config = json.load(conffile)
-    pass
+        # global backup_config
+        try:
+            config = json.load(conffile)
+            set_state('config', 'ok')
+        except JSONDecodeError as e:
+            config = None
+            set_state('config','error', "incorrect config: " + str(e))
+        return config
 
 
-def check_shutdown():
-    if shutdown.is_set():
-        raise Shutdown()
-
+# def check_shutdown():
+#     if shutdown.is_set():
+#         raise Shutdown()
+#
 
 def logfilename(parts):
     return "{}/{}_{}.log".format(logdir, '_'.join(parts), datetime.now().strftime("%Y-%m-%d_%H:%M:%S"))
@@ -92,26 +109,39 @@ def put_config(host, fs, config):
 
 
 def ping(host):  # ping -q -c3 -W10
-    ps = run(['ping', '-c3', '-W10', host], stdout=DEVNULL, stderr=DEVNULL)
+    ps = run(['nc', '-z', host, '22'], stdout=DEVNULL, stderr=DEVNULL)
+    # ps = run(['ping', '-c3', '-W10', host], stdout=DEVNULL, stderr=DEVNULL)
     return ps.returncode == 0
 
 
-def reachable(src_host, dest_host):
+def reachable(host):
     reachable = True
-    if not ping(src_host):
-        _log_error("source unreachable: " + src_host)
-        reachable = False
-    if not ping(dest_host):
-        _log_error("destination unreachable: " + dest_host)
+    if not ping(host):
+        _log_error("host unreachable: " + host)
         reachable = False
     if reachable:
-        if not check_ssh(src_host):
-            _log_error("source ssh key login failed: " + src_host)
-            reachable = False
-        if not check_ssh(dest_host):
-            _log_error("destination ssh key login failed: " + dest_host)
+        if not check_ssh(host):
+            _log_error("source ssh key login failed: " + host)
             reachable = False
     return reachable
+
+
+# def reachable2(src_host, dest_host):
+#     reachable = True
+#     if not ping(src_host):
+#         _log_error("source unreachable: " + src_host)
+#         reachable = False
+#     if not ping(dest_host):
+#         _log_error("destination unreachable: " + dest_host)
+#         reachable = False
+#     if reachable:
+#         if not check_ssh(src_host):
+#             _log_error("source ssh key login failed: " + src_host)
+#             reachable = False
+#         if not check_ssh(dest_host):
+#             _log_error("destination ssh key login failed: " + dest_host)
+#             reachable = False
+#     return reachable
 
 
 def check_ssh(host):
@@ -125,6 +155,7 @@ def check_ssh(host):
 def check_and_create_fs(host, fs):
     if not check_fs(host, fs):
         run(['ssh', "root@" + host, 'zfs create -p', fs], check=True)
+        # TODO: instead of CalledProcessError check stderr on eroor and raise own exception
 
 
 def remote_script(host=None, script=None, args=None):
@@ -182,56 +213,77 @@ def remote_sync(send_host, send_cmd, recv_host, recv_cmd, log):
 
     return send.returncode == 0 and recv.returncode == 0
 
+def addremovelist(old, new):
+    toadd = [i for i in new if i.name not in [s.name for s in old]]
+    toremove = [i for i in old if i.name not in [s.name for s in new]]
+    for r in toremove:
+        old.remove(r)
+    old.extend(toadd)
 
-class Dataset(object):
+
+class Dataset:
     def __str__(self):
         s = "client: {}; src_host: {}; src_path: {}; dest_host: {}; " \
-            "dest_path: {}; dest_exists: {}; snap: {}; start: {}; last: {}; " \
+            "dest_path: {}; dest_exists: {}; start: {}; last: {}; " \
             "interval: {}; next: {}; next_update: {};"
-        return s.format(self.client,
-                        self.src_host,
-                        self.src_path,
-                        self.dest_host,
-                        self.dest_path,
-                        self.dest_exists,
-                        self.snap,
-                        self.start,
-                        self.last,
-                        self.interval,
-                        self.next,
-                        self.next_update)
+        return s.format(self.client, self.src_host, self.src_path, self.dest_host,
+                        self.dest_path, self.dest_exists, self.start, self.last,
+                        self.interval, self.next, self.last_update)
 
-    def __init__(self, client, host, path, dest_host, dest_path):
-        self.client = client['client']
-        self.src_host = host
-        self.src_path = path
-        (self.dest_host, self.dest_path) = dest.split(':')
-        self.dest_host = host if self.dest_host == 'localhost' else self.dest_host
+    def __init__(self, client, src_host, src_path, dest_host, dest_path, origins_path):
+        self.client = client
+        self.src_host, self.src_path = src_host, src_path
+        self.dest_host, self.dest_path = dest_host, dest_path
+        self.origins = []
+        self.origins_path = origins_path
+        # self.dest_host = host if self.dest_host == 'localhost' else self.dest_host
         self.dest_exists = None
-        self.origin = None
-        self.snap = None
+        # self.snap = None
         self.start = None
         self.last = None
         self.interval = None
         self.next = None
-        self.next_update = 0
-        self.update()  # srchost may be unreachable on service start
+        self.last_update = 0
+        self.logfile = None
+        self.shutdown = None
+
+        # self.update()  # srchost may be unreachable on service start
 
     def _log_next_sync(self):
         _log_info("Next sync for: {}:{} on: {}".
                   format(self.src_host, self.src_path,
                          datetime.fromtimestamp(self.next).strftime('%Y-%m-%d %H:%M:%S')))
 
-    def update(self, force=False):
-        if not force and datetime.now().timestamp() < self.next_update:
+    def set_orphan_origins(self):
+        cmd = get_orphan_origins_cmd.format(fs=self.src_path, re=re.escape(self.src_path))
+        orphan_origins_text = remote_script(host=self.src_host, script=cmd).strip()
+        if not orphan_origins_text:
             return
+        orphan_origins = {}
+        for line in orphan_origins_text.splitlines():
+            name, guid = line.split()
+            orphan_origins.update({guid: name})
+        existing_text = remote_script(host=self.dest_host,
+                                      script="zfs get guid -Hovalue | egrep '$1'",
+                                      args=['|'.join(orphan_origins.keys())]).strip()
+
+        existing = existing_text.splitlines()
+        self.origins.clear()
+        for src_path in [ v for k,v in orphan_origins if k not in existing]:
+            self.origins.append(
+                Origin(src_path, self.origins_path + '/' + os.path.basename(src_path)))
+
+    def update(self):
+        # if not force and datetime.now().timestamp() < self.next_update:
+        #     return
         self.dest_exists = check_fs(self.dest_host, self.dest_path)
         if not self.dest_exists:
             self._del_sync_src()
+            self.set_orphan_origins()
         params = remote_script(host=self.src_host, script=get_dataset_params, args=[self.src_path])
         if params:
             params = json.loads(params)  # exception on wrong params
-            self.origin = params["origin"]
+            # self.origin = params["origin"]
             # self.snap = params["snap_first"]
             self.start = datetime.strptime(params["omix_sync_start"], "%Y-%m-%d %H:%M").timestamp()\
                 if params["omix_sync_start"] else 0
@@ -244,13 +296,16 @@ class Dataset(object):
             self.next = self.last + self.interval  # TODO make daily at night
             if self.start > self.next:
                 self.next = self.start
-            self.next_update = datetime.now().timestamp() + 3600
+            # self.next_update = datetime.now().timestamp() + 3600
+            self.last_update = datetime.now().timestamp()
         else:
-            # connection error
-            self.next = datetime.now().timestamp() + FAIL_INTERVAL
-            self.next_update = datetime.now().timestamp() + FAIL_INTERVAL
+            pass
 
-        self._log_next_sync()
+            # connection error
+            # self.next = datetime.now().timestamp() + FAIL_INTERVAL
+            # self.next_update = datetime.now().timestamp() + FAIL_INTERVAL
+
+        # self._log_next_sync()
 
         # log next sync time
         # self._log_next_sync()
@@ -269,12 +324,12 @@ class Dataset(object):
         return q*k
 
     def _test(self):
-        try:
-            run(['nc', '-z', self.src_host, '22'], check=True)
-            run(['nc', '-z', self.dest_host, '22'], check=True)
-        except CalledProcessError as e:
-            _log_error("Host unreachable: {}".format(e.cmd[2]))
-            return False
+        # try:
+        #     run(['nc', '-z', self.src_host, '22'], check=True)
+        #     run(['nc', '-z', self.dest_host, '22'], check=True)
+        # except CalledProcessError as e:
+        #     _log_error("Host unreachable: {}".format(e.cmd[2]))
+        #     return False
 
         if self.src_host == self.dest_host:
             return True
@@ -295,14 +350,11 @@ class Dataset(object):
         return ret
 
     def _snap(self):
-        self._del_snap_send()
-        run(['ssh', "root@" + self.src_host, 'zfs snap -r {}@omix_send'.format(self.src_path)], check=True)
-        return "@omix_send"
-
-    def _del_snap_send(self):
         zfs_delete = 'zfs destroy -r {fs}@omix_send 2>/dev/null\n'
         run(['ssh', "root@" + self.dest_host, zfs_delete.format(fs=self.dest_path)])
         run(['ssh', "root@" + self.src_host, zfs_delete.format(fs=self.src_path)])
+        run(['ssh', "root@" + self.src_host, 'zfs snap -r {}@omix_send'.format(self.src_path)], check=True)
+        return "@omix_send"
 
     def _del_sync_src(self):
         old_sync = '{}@omix_sync'.format(self.src_path)
@@ -315,8 +367,6 @@ class Dataset(object):
             run(['ssh', "root@" + self.dest_host, 'zfs destroy -r {}'.format(old_sync)], check=True)
 
     def _rename_snap_one(self, src_path, dest_path):
-        # self._del_sync_src()
-        # self._del_sync_dest()  >/dev/null
         zfs_rename = 'set -e\n'\
             'if zfs list {fs}@omix_prev >/dev/null 2>&1; then zfs destroy {fs}@omix_prev; fi\n' \
             'if zfs list {fs}@omix_sync >/dev/null 2>&1; then zfs rename {fs}@omix_sync {fs}@omix_prev; fi\n' \
@@ -339,11 +389,6 @@ class Dataset(object):
             if not snap[0] in send:
                 send[snap[0]] = dict()
             send[snap[0]].update({'dst': snap[1]})
-            # if not snap[0] in send:
-            #     send[snap[0]] = {"src": "", "dst": snap[1]}
-            # else:
-            #     send[snap[0]]['dst'] = snap[1]
-        # send = {k:v for (k,v) in send.items() if 'src' in v and 'dst' in v }
         for v in send.values():
             if 'src' in v and 'dst' in v:
                 self._rename_snap_one(v['src'], v['dst'])
@@ -354,10 +399,11 @@ class Dataset(object):
     # def _rename_snap_all(self):
     #     self._rename_snap_all(self.src_path, self.dest_path)
 
-    def _sync(self, cmd_send, cmd_recv, log):
-        mbuf_send = "| mbuffer -q -s 128k -m 1G -O {}:9000 -W 300".format(self.dest_host)
-        mbuf_recv = "mbuffer -q -s 128k -m 1G -I 9000 -W 300 | "
-        mbuf_loc = "| mbuffer -q -s 128k -m 1G -W 300 |"
+    def _sync(self, cmd_send, cmd_recv):
+        log = self.logfile if self.logfile and not self.logfile.closed else None
+        mbuf_send = "| mbuffer -q -s 128k -m 256M -O {}:9000 -W 300".format(self.dest_host)
+        mbuf_recv = "mbuffer -q -s 128k -m 256M -I 9000 -W 300 | "
+        mbuf_loc = "| mbuffer -q -s 128k -m 256M -W 300 |"
         if log:
             self._log_cmd(log, cmd_send, cmd_recv)
         if self.src_host != self.dest_host:
@@ -378,10 +424,10 @@ class Dataset(object):
             #                  datetime.fromtimestamp(self.next).strftime('%Y-%m-%d %H:%M:%S')))
         return ret
 
-    def _get_resume_token(self):
+    def _get_resume_token(self, dest_path):
         resume_token = remote_script(host=self.dest_host,
                    script="zfs get -r -Honame,value receive_resume_token $1 | sed '/-$/d' | sed '1!d' ",
-                   args=[self.dest_path]).strip()
+                   args=[dest_path]).strip()
         #
         return resume_token.split() if resume_token else None
         # return "" if resume_token == "-" else resume_token
@@ -419,30 +465,35 @@ class Dataset(object):
             logfile.write("ERROR sync: {}\n".format(dt))
         logfile.flush()
 
+    def resume_sync(self, dest_path):
+        while True:
+            if self.shutdown.is_set():
+                return False
+            resume_token = self._get_resume_token(dest_path)
+            if not resume_token:
+                break
+            cmd_send = "zfs send -v -t {}".format(resume_token[1])
+            cmd_recv = "zfs recv -suvF {}".format(resume_token[0])
+            if self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv):
+                break
+        return True
+
+    def sync(self, full = False):
+        if self.shutdown.is_set():
+            return False
+        inc = "" if full else " -I @omix_sync"
+        cmd_send = "zfs send -RLecv {}@omix_send" + inc.format(self.src_path)
+        cmd_recv = "zfs recv -suvF {}".format(self.dest_path)
+        return self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv)
 
     def run(self):
 
-        # reachable = True
-        # if not ping(self.src_host):
-        #     _log_error("source unreachable: " + self.src_host)
-        #     reachable = False
-        # if not ping(self.dest_host):
-        #     _log_error("destination unreachable: " + self.dest_host)
-        #     reachable = False
-        # if reachable:
-        #     if not check_ssh(self.src_host):
-        #         _log_error("source ssh key login failed: " + self.src_host)
-        #         reachable = False
-        #     if not check_ssh(self.dest_host):
-        #         _log_error("destination ssh key login failed: " + self.dest_host)
-        #         reachable = False
-
-        if not reachable(self.src_host, self.dest_host):
+        if not reachable(self.src_host) or not reachable(self.dest_host):
             self.next = datetime.now().timestamp() + FAIL_INTERVAL
             self._log_next_sync()
             return
 
-        self.update()
+        # self.update()
         if self.next > datetime.now().timestamp():
             return
 
@@ -471,34 +522,171 @@ class Dataset(object):
         #     self._log_next_sync()
         #     return
 
-        with open(logfilename((self.client, os.path.basename(self.src_path))), 'w', buffering=1) as logfile:
+        with open(logfilename((self.client, os.path.basename(self.src_path))), 'w', buffering=1) as self.logfile:
             _log_info("run begin transfer: {}:{} -> {}".format(self.src_host, self.src_path, self.dest_host))
-            if not self.dest_exists:
-                fromorigin = "-I {}".format(self.origin) if self.origin else ""
-                self._snap()
-                cmd_send = "zfs send -RLecv {}@omix_send {}".format(self.src_path, fromorigin)
-                cmd_recv = "zfs recv -suvF {}".format(self.dest_path)
-                self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv, log=logfile)
-                self._rename_snap_all()
-                self.update(force=True)
-                return
+            for origin in self.origins:
+                cmd_send = "zfs send -RLecv {}".format(origin.src_path)
+                cmd_recv = "zfs recv -suvF {}".format(origin.dst_path)
+                if not self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv):
+                    if not self.resume_sync(self.dest_path):
+                        return
 
-            resume_token = self._get_resume_token()
-            if resume_token:
-                cmd_send = "zfs send -v -t {}".format(resume_token[1])
-                cmd_recv = "zfs recv -suvF {}".format(resume_token[0])
-                if self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv, log=logfile):
-                    self._rename_snap_all()
-                    self.update(force=True)
+            if self.shutdown.is_set():
                 return
+            self.update()
+            if self.origins:
+                return
+            if not self.dest_exists:
+                # fromorigin = "-I {}".format(self.origin) if self.origin else ""
+                self._snap()
+                if not self.sync(full=True):
+                    if not self.resume_sync(self.dest_path):
+                        return
+                self._rename_snap_all()
+                self.update()
+
             self._snap()
-            cmd_send = "zfs send -RLecv {}@omix_send -I @omix_sync".format(self.src_path)
-            cmd_recv = "zfs recv -suvF {}".format(self.dest_path)
-            self._sync(cmd_send=cmd_send, cmd_recv=cmd_recv, log=logfile)
+            if not self.sync():
+                if not self.resume_sync(self.dest_path):
+                    return
             self._rename_snap_all()
-            self.update(force=True)
+            self.update()
             return
 
+class Path:
+    def __init__(self, host, path):
+        self.host = host
+        self.path = path
+        self.dataset = None
+
+    @property
+    def name(self):
+        return self.host + ':' + self.path
+
+class VM:
+    def __init__(self, host, vmid):
+        self.host = host
+        self.vmid = vmid
+        self.paths = []
+
+    @property
+    def name(self):
+        return self.host + ':' + self.vmid
+
+class Origin:
+    def __init__(self, src_path, dst_path):
+        self.src_path = src_path
+        self.dst_path = dst_path
+
+class DSHolder:
+    def __init__(self, client):
+        self.client = client
+        self._paths = []
+        self._vms = []
+        self._tpls = []
+        self._dest_host = None
+        self._dest_path = None
+
+    @property
+    def dest(self, dest):
+        pass
+
+    @dest.setter
+    def dest(self, dest):
+        dest = dest if dest != 'omix_cloud' else omix_cloud_dest
+        (dest_host, dest_path) = dest.split(':')
+        if self._dest_host == None and self._dest_path == None:
+            self._dest_host, self._dest_path = dest_host, dest_path
+            return
+        if self._dest_host != dest_host or self._dest_path != dest_path:
+            self._paths.clear()
+            self._vms.clear()
+
+    @property
+    def paths(self):
+        pass
+
+    @paths.setter
+    def paths(self, lst):
+        addremovelist(self._paths, lst)
+        pass
+
+    @property
+    def vms(self):
+        pass
+
+    @vms.setter
+    def vms(self, lst):
+        addremovelist(self._vms, lst)
+        pass
+
+    def get_all_paths(self):
+        all = list(self._paths)
+        for vm in self._vms:
+            all.extend(vm.paths)
+        return all
+
+    def next2run(self):
+        rdy2run = {}
+        for path in self.get_all_paths():
+            if path.dataset and path.dataset.next < datetime.now().timestamp():
+                rdy2run.update({path.dataset.next: path.dataset})
+        if rdy2run:
+            return sorted(rdy2run.items())[0][1]
+
+
+
+    def create_dataset(self, path, dest_path, origins_path):
+        if not path.dataset:
+            if reachable(path.host):
+                check_and_create_fs(self._dest_host, dest_path)
+                path.dataset = Dataset(self.client,
+                                       path.host, path.path,
+                                       self._dest_host, dest_path + '/' + os.path.basename(path.path),
+                                       origins_path)
+
+    def need_prepare_datasets(self):
+        for path in self._paths:
+            if not path.dataset:
+                return True
+        for vm in self._vms:
+            if not vm.paths:
+                return True
+
+
+    def prepare_datasets(self):
+        if not reachable(self._dest_host):
+            return
+        check_and_create_fs(self._dest_host, self._dest_path)
+        origins_path = self._dest_path + '/' + 'origins'
+        check_and_create_fs(self._dest_host, origins_path)
+        for path in self._paths:
+            self.create_dataset(path, self._dest_path, origins_path)
+        self.vm2paths()
+        for vm in self._vms:
+            dest_path = self._dest_path + '/' + vm.vmid
+            for path in vm.paths:
+                self.create_dataset(path, dest_path, origins_path)
+
+    def update_datasets(self):
+        for path in self.get_all_paths():
+            if path.dataset and path.dataset.last_update + 3600 < datetime.now().timestamp():
+                path.dataset.update()
+
+
+    def vm2paths(self):
+        paths= []
+        for vm in self._vms:
+            if not reachable(vm.host):
+                continue
+            params = remote_script(host=vm.host, script=get_vm_disks_script, args=[str(vm.vmid)]).strip()
+            confpaths, conf = params.split('-----\n')
+            check_and_create_fs(self._dest_host, self._dest_path)
+            put_config(self._dest_host, self._dest_path + '/' + vm.vmid + '.conf', conf)
+            confpaths = confpaths.splitlines() if confpaths else []
+            for path in confpaths:
+                paths.append(Path(vm.host, path))
+        addremovelist(vm.paths, paths)
 
 def client_backup(client):
     _log_info("start backup client: " + client['client'])
@@ -581,17 +769,167 @@ def client_backup(client):
             # s -= 1
         sleep(1)
 
+# [
+#     {
+#         "client" : "client name"
+#         "shutdown": True or False,
+#         "datasets": [ds1, ds2]
+#     }
+# ]
+
+class ClientThread(threading.Thread):
+
+    clients=dict()
+
+    def __init__(self, name):
+        super().__init__()
+        self.client = name
+        self.shutdown = Event()
+        self.conf = None
+        self.dsholder = DSHolder(name)
+        ClientThread.clients.update({name: self})
+
+    @staticmethod
+    def setconf(confs):
+        if not confs:
+            return
+        must = []
+        for conf in confs:
+            name = conf["client"]
+            must.append(name)
+            ct = ClientThread.clients.get(name)
+            if not ct:
+                ct = ClientThread(name)
+                # ClientThread.clients.update({name: ct})
+                ct.start()
+            ct.conf = conf
+        for name, ct in list(ClientThread.clients.items()):
+            if name not in must:
+                ct.remove()
+                # del ClientThread.clients[name]
+        pass
+
+    @staticmethod
+    def shutdown():
+        for ct in ClientThread.clients.values():
+            # ct = ClientThread.clients[name]
+            ct.shutdown.set()
+        sleep(1)
+        while len(ClientThread.clients):
+            for name, ct in list(ClientThread.clients.items()):
+                if not ct.is_alive():
+                    del ClientThread.clients[name]
+
+    def remove(self):
+        self.shutdown.set()
+        set_state(self.client, "remove")
+        while self.is_alive():
+            sleep(1)
+        del ClientThread.clients[self.client]
+
+    def parseconf(self):
+        self.dsholder.dest = self.conf['dest'] + '/' + self.client
+        paths = []
+        vms = []
+
+        for src in list(self.conf["src"]):
+            host = ".".join((src['host'], self.conf['domain']))
+
+            confpaths = src.get("paths", [])
+            for path in confpaths:
+                paths.append(Path(host, path))
+
+            confvmids = src.get("vmids", [])
+            for vmid in confvmids:
+                vms.append(VM(host, vmid))
+
+        self.dsholder.paths = paths
+        self.dsholder.vms = vms
+        self.conf = None
+
+    def run(self):
+        try:
+            self._run()
+        except Exception as e:
+            _log_error(e)
+
+    def _run(self):
+        # threading.local
+        zzz = threading.local()
+        zzz.ClientThread = self
+        prepare_datasets_last = 0
+        update_datasets_last = 0
+        while not self.shutdown.is_set():
+            if self.conf:
+                print(self.client, self.conf)
+                self.parseconf()
+                prepare_datasets_last = 0
+                update_datasets_last = 0
+            if prepare_datasets_last + 600 < datetime.now().timestamp()\
+                    and self.dsholder.need_prepare_datasets():
+                self.dsholder.prepare_datasets()
+                prepare_datasets_last = datetime.now().timestamp()
+            if update_datasets_last + 600 < datetime.now().timestamp():
+                self.dsholder.update_datasets()
+                update_datasets_last = datetime.now().timestamp()
+
+            dataset = self.dsholder.next2run()
+            if dataset:
+                dataset.shutdown = self.shutdown
+                dataset.run()
+            sleep(1)
+
+
+
+
+    # @staticmethod
+    # def create(conf):
+    #     name = conf["client"]
+    #     ct = ClientThread.clients.get(name)
+    #     if not ct:
+    #         ct = ClientThread()
+    #         ClientThread.clients.update({ name: ct })
+    #         ct.start()
+    #     ct.setconf(conf)
+    #     return ct
+    #
+    # @staticmethod
+    # def destroyz(name):
+    #     ct = ClientThread.clients.get(name)
+    #     if ct:
+    #         del ClientThread.clients[name]
+    #         ct.__destroy__()
+
+
+CONFIG_FREQ=20
 
 def start():
-    loadconfig()
-    check_and_create_fs(*omix_cloud_dest.split(':'))
+    # loadconfig()
+    # TODO: verify that omix_cloud_dest creates on rep
+    # check_and_create_fs(*omix_cloud_dest.split(':'))
 
-    client_threads = list()
-    for client in backup_config:
-        t = threading.Thread(target=client_backup, name=client['client'], args=(client,))
-        t.start()
-        client_threads.append(t)
-        pass
+    next_run = 0
+    while not shutdown.is_set():
+        if next_run < datetime.now().timestamp():
+            next_run = datetime.now().timestamp() + CONFIG_FREQ
+            print("read conf")
+            t = datetime.now().timestamp()
+            ClientThread.setconf(loadconfig())
+            print("end conf ", datetime.now().timestamp() - t)
+        sleep(1)
+    ClientThread.shutdown()
+    pass
+    #     return
+
+    # for clientconf in loadconfig():
+    #     ClientThread.get(clientconf)
+    #     pass
+
+    # for client in backup_config:
+    #     t = threading.Thread(target=client_backup, name=client['client'], args=(client,))
+    #     t.start()
+    #     client_threads.append(t)
+    #     pass
 
     # while len(client_threads):
     #     sleep(3)
@@ -599,7 +937,6 @@ def start():
     #         if t.is_alive():
     #             continue
     #         client_threads.remove(t)
-    pass
 
 
 get_vm_disks_script = r'''
@@ -630,11 +967,19 @@ echo -----
 echo "$config"
 '''
 
+get_dataset_origin_cmd = "zfs get -Hpo value origin {fs}"
+get_orphan_origins_cmd = '''origins=$(zfs list -r {fs} -Hoorigin | sed -e '/-/d' -e '/^{re}/d')
+[ -z $origins ] || zfs get guid -Honame,value $origins
+'''
+#    "zfs get guid -Honame,value $(zfs list -r {fs} -Hoorigin | sed -e '/-/d' -e '/^{re}/d')"
+#    "zfs list -r {fs} -Hoorigin | sed -e '/-/d' -e '/^{re}/d'"
+
+
 get_dataset_params = r'''
 dataset=$1
 
-origin=$(zfs get -Hpo value origin $dataset)
-[ $origin = - ] && origin=
+#origin=$(zfs get -Hpo value origin $dataset)
+#[ $origin = - ] && origin=
 
 zfs list $dataset@omix_sync >/dev/null 2>&1 \
     && omix_sync_time=$(zfs get -Hpo value creation $dataset@omix_sync) \
@@ -649,28 +994,56 @@ omix_sync_interval=$(zfs get -Hpo value "ua.com.omix:sync_interval" $dataset)
 cat <<EOF
 {
     "dataset": "$dataset",
-    "origin": "$origin",
     "omix_sync_time": $omix_sync_time,
     "omix_sync_start": "$omix_sync_start",
     "omix_sync_interval": "$omix_sync_interval"
 }
 EOF
 '''
+#    "origin": "$origin",
 timeout_port = r'''T=$1+1; while ((T-=1)); do ss -tlnp | grep -q ' *:9000 ' || break; sleep 1; done; '''
 free_up_port = r'''ss -tlnp | awk '$4~/\*:9000/ { print gensub(/^.*,pid=([0-9]*),.*$/,"\\1","g",$6)}' \
 | xargs -r kill; '''
 exit_code = r'''[ "$T" -ne "0" ] && echo ok'''
 
 
+shutdown = Event()
 def signal_handler(sig, frame):
-    print('You pressed Ctrl+C!')
+    if sig == SIGTERM:
+        print('Signal TERM!')
+    elif sig == SIGINT:
+        print('You pressed Ctrl+C!')
+    else:
+        print('Unknown signal!')
     shutdown.set()
+
+# class Test:
+#     def __init__(self):
+#         self.logfile = None
+#
+#     def open(self):
+#         self.testlogfile()
+#         with open("zzz", 'w', buffering=1) as self.logfile:
+#             self.testlogfile()
+#
+#     def testlogfile(self):
+#         if self.logfile and not self.logfile.closed:
+#             print("opened")
+#         else:
+#             print("closed")
+
+
 
 
 if __name__ == "__main__":
     # zzz = remote_script(host="pm1.ssc.bla", script=free_up_port)
+    # t = Test()
+    # t.open()
+    # t.open()
+    # t.open()
     # exit(0)
     signal(SIGINT, signal_handler)
+    signal(SIGTERM, signal_handler)
 
     start()
     # try:
@@ -678,7 +1051,7 @@ if __name__ == "__main__":
     #         sleep(5)
     # except KeyboardInterrupt:
     #     sys.exit(0)
-    pause()
+    # pause()
     pass
     # while not shutdown.is_set():
     #     sleep(3)

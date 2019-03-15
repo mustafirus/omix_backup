@@ -5,10 +5,12 @@ import subprocess
 from subprocess import Popen, run, PIPE
 
 omix_cloud_dest = 'pm1.ssc.bla:rpool/misc/omixbackup'
+# confdir = '.conf'
+confdir = '/etc/omix_replicate'
 
 
 def loadconfig():
-    with open("/etc/omix_replicate/omix_backup.json", 'r') as conffile:
+    with open(confdir + "/omix_backup.json", 'r') as conffile:
         return json.load(conffile)
 
 def remote_script(host=None, script=None, args=None):
