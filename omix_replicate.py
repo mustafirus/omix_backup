@@ -46,7 +46,7 @@ FAIL_INTERVAL = 60  # seconds
 PREPARE_DATASETS_FREQ = 200
 TRY_UPDATE_DATASETS_FREQ = 300
 UPDATE_DATASETS_FREQ = 600
-CHECK_RUNNING_ORPHAN_SYNC = 60
+CHECK_RUNNING_ORPHAN_SYNC = 20
 
 
 class BadClient(Exception):
@@ -240,7 +240,6 @@ def check_and_create_fs(host, fs):
     if not check_fs(host, fs):
         run(['ssh', "root@" + host, 'zfs create -p', fs], stderr=PIPE, check=True)
 
-
 def remote_script(host=None, script=None, args=None):
     shell = Popen(["ssh", "root@" + host, "bash", "-s", "--"] + (args or []),
                   stdin=PIPE, stdout=PIPE, stderr=PIPE, universal_newlines=True)
@@ -250,17 +249,21 @@ def remote_script(host=None, script=None, args=None):
         return ''
     return out
 
+#xargs
+def remote_cmd_xargs(host, cmd, argstr):
+    proc = Popen(["ssh", "root@" + host, "xargs " + cmd],
+                 stdin=PIPE, stdout=PIPE, stderr=DEVNULL, universal_newlines=True)
+    (out, err) = proc.communicate(argstr)
+    return out
 
 def remote_sync_cmd(host, cmd, log):
     if host and cmd:
         proc = Popen(["ssh", "root@" + host, REMOTEPROCBASHCMD],
                      stdin=PIPE, stdout=log, stderr=STDOUT, universal_newlines=True)
-        trap = "trap 'echo trap SIGINT >>/tmp/zzz' SIGINT\n" \
-               "trap 'echo trap SIGTERM >>/tmp/zzz' SIGTERM\n" \
-               "trap 'echo trap SIGHUP >>/tmp/zzz' SIGHUP\n" \
-               "trap 'echo trap SIGPIPE >>/tmp/zzz' SIGPIPE\n" \
-               "trap 'echo trap SIGQUIT >>/tmp/zzz' SIGQUIT\n"
-        proc.stdin.write(trap)
+        # SIGINT SIGTERM SIGHUP SIGPIPE SIGQUIT
+        # "set -e\n"
+        pre = "trap '' SIGPIPE\n"
+        # proc.stdin.write(pre)
         proc.stdin.write(cmd)
         proc.stdin.close()
         sleep(1)
@@ -350,6 +353,7 @@ class Dataset:
         self.last_update = 0
         self.logfile = None
         self.shutdown = None
+        self.incomplete = False
 
         # self.update()  # srchost may be unreachable on service start
     def check_shutdown(self):
@@ -366,6 +370,7 @@ class Dataset:
         cmd = get_orphan_origins_cmd.format(fs=self.src_path, re=re.escape(self.src_path))
         orphan_origins_text = remote_script(host=self.src_host, script=cmd).strip()
         if not orphan_origins_text:
+            self.origins.clear()
             return
         orphan_origins = {}
         for line in orphan_origins_text.splitlines():
@@ -377,17 +382,13 @@ class Dataset:
 
         existing = existing_text.splitlines()
         self.origins.clear()
-        for src_path in [v for k, v in orphan_origins if k not in existing]:
+        for src_path in [v for k, v in orphan_origins.items() if k not in existing]:
             self.origins.append(
                 Origin(src_path, self.origins_path + '/' + os.path.basename(src_path)))
 
     def update(self):
         # if not force and datetime.now().timestamp() < self.next_update:
         #     return
-        self.dest_exists = check_fs(self.dest_host, self.dest_path)
-        if not self.dest_exists:
-            self._del_sync_src()
-            self.set_orphan_origins()
         params = remote_script(host=self.src_host, script=get_dataset_params, args=[self.src_path])
         if params:
             params = json.loads(params)  # exception on wrong params
@@ -406,6 +407,13 @@ class Dataset:
                 self.next = self.start
             # self.next_update = datetime.now().timestamp() + 3600
             self.last_update = datetime.now().timestamp()
+
+        self.dest_exists = check_fs(self.dest_host, self.dest_path)
+        if not self.dest_exists:
+            self._del_sync_src()
+        if not self.last:
+            self.set_orphan_origins()
+        self.incomplete = check_fs(self.dest_host, self.dest_path + "@omix_send")
 
     @staticmethod
     def _interval_to_timestamp(interval):
@@ -488,6 +496,28 @@ class Dataset:
                 self.src_host, self.src_path,
                 self.dest_host, self.dest_path))
 
+    def fix_last_common_snap(self, src_path, dest_path):
+        lastsnapname = ''
+        allsrcsnaps = remote_script(self.src_host, "zfs list -rd1 -tsnap -Honame -Screation $1", [src_path])
+        if allsrcsnaps:
+            alldstsnaps = re.sub(r'^' + src_path, dest_path, allsrcsnaps, flags=re.MULTILINE)
+            lastsnapname = remote_cmd_xargs(self.dest_host,
+                                               "zfs list -Honame 2>/dev/null | sed -e '1!d' -e 's/^.*@//'", alldstsnaps)
+        if not lastsnapname:
+            remote_script(self.dest_host, destroy_all_snaps_in_dataset, [dest_path])
+            return
+        remote_script(self.src_host, last_snap_make_sync, [src_path, lastsnapname])
+
+    def fix_incomplete_sync(self):
+        dms = remote_script(self.src_host, datasets_missed_snap_script, [self.src_path, "omix_sync"])
+        dms = re.sub(r'^' + self.src_path, self.dest_path, dms, flags=re.MULTILINE)
+        dms = remote_cmd_xargs(self.dest_host, "zfs list -Honame", dms)
+        datasets_dst = dms.splitlines()
+        dms = re.sub(r'^' + self.dest_path, self.src_path, dms, flags=re.MULTILINE)
+        datasets_src = dms.splitlines()
+        for n in range(0,len(datasets_src)):
+            self.fix_last_common_snap(datasets_src[n], datasets_dst[n])
+        pass
 
     def _get_resume_token(self, dest_path):
         resume_token = remote_script(host=self.dest_host,
@@ -557,6 +587,8 @@ class Dataset:
         return resumed
 
     def run(self):
+        # self.fix_incomplete_sync()
+        # return
         if self._run():
             self.set_state('ok')
         else:
@@ -730,12 +762,25 @@ class DSHolder:
         return allpaths
 
     def next2run(self):
-        rdy2run = {}
+        runseq = {}
         for path in self.get_all_paths():
-            if path.dataset and path.dataset.next < datetime.now().timestamp():
-                rdy2run.update({path.dataset.next: path.dataset})
-        if rdy2run:
-            return sorted(rdy2run.items())[0][1]
+            runseq.update({path.dataset.next: path.dataset})
+        torun = sorted(runseq.items())
+        if not torun:
+            _log_info("{}: nothing to run".format(self.client))
+            return None
+        next_run, dataset = torun[0]
+        if next_run > datetime.now().timestamp():
+            _log_info("{}: next run in {}s".format(self.client, next_run - datetime.now().timestamp()))
+            return None
+        return dataset
+    # def next2run(self):
+    #     rdy2run = {}
+    #     for path in self.get_all_paths():
+    #         if path.dataset and path.dataset.next < datetime.now().timestamp():
+    #             rdy2run.update({path.dataset.next: path.dataset})
+    #     if rdy2run:
+    #         return sorted(rdy2run.items())[0][1]
 
     def create_dataset(self, path, dest_path, origins_path):
         if not path.dataset:
@@ -890,9 +935,9 @@ class ClientThread(threading.Thread):
             _log_error(self.client + ": bad / nothing to do")
         except Shutdown:
             _log_error(self.client + ": shutting down")
-        except Exception as e:
-            _log_error(self.client + ": unknown:" + str(e))
-            raise e.with_traceback(sys.exc_info()[2])
+        # except Exception as e:
+        #     _log_error(self.client + ": unknown:" + str(e))
+        #     raise e.with_traceback(sys.exc_info()[2])
         finally:
             save_state()
 
@@ -1013,6 +1058,35 @@ free_up_port = r'''ss -tlnp | awk '$4~/\*:9000/ { print gensub(/^.*,pid=([0-9]*)
 | xargs -r kill; '''
 exit_code = r'''[ "$T" -ne "0" ] && echo ok'''
 
+datasets_missed_snap_script = '''
+ds=$1
+snap=$2
+for fs in $(zfs list -r -Honame $ds); do
+  zfs list $fs@$snap >/dev/null 2>&1 || echo $fs
+done
+'''
+destroy_all_snaps_in_dataset='''
+for snap in `zfs list -rd1 -tsnap -Honame $1`
+do
+zfs destroy $snap
+done
+'''
+last_snap_make_sync='''
+ds=$1
+snap=$2
+set -e
+zfs set ua.omix.bla:omix_old=$snap $ds@$snap
+zfs rename $ds@$snap $ds@omix_sync
+'''
+restore_original_snaps='''
+ds=$1
+set -e
+script='{ print "zfs rename " $2"@"$3 " " $2"@"$1 "; zfs inherit ua.omix.bla:omix_old " $2"@"$1 "\n" }
+'
+commands=$(zfs get -r -Hovalue,name ua.omix.bla:omix_old $ds | sed -e '/^-/d' -e 's/@/ /' |  awk "$script")
+eval "$commands"
+'''
+
 
 def signal_handler(sig, frame):
     if sig == SIGTERM:
@@ -1026,6 +1100,7 @@ def signal_handler(sig, frame):
 
 
 if __name__ == "__main__":
+    # exit(0)
     # signal(SIGINT, signal_handler)
     # signal(SIGTERM, signal_handler)
     # pthread_sigmask(SIG_BLOCK, {SIGINT})
@@ -1050,7 +1125,6 @@ if __name__ == "__main__":
     #         sleep(1)
     #
     # # check_and_install_soft("deb.home.nt.bla")
-    # exit(0)
     signal(SIGINT, signal_handler)
     signal(SIGTERM, signal_handler)
     pthread_sigmask(SIG_BLOCK, {SIGINT})
