@@ -16,7 +16,7 @@ run_next_day = 0
 run_next_week = 0
 run_next_month = 0
 zpools = ""
-
+PROPERTYPREFIX = 'ua.com.omix'
 
 def _log_error(msg):
 #    print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "error: ", str(msg).strip(), flush=True)
@@ -98,7 +98,7 @@ def snapit():
         period = "-"
     snapname = "omix_{}-{}".format(period, datetime.now().strftime("%Y-%m-%d-%H%M"))
     for zpool in zpools:
-        val = subrun("/sbin/zfs get ua.com.omix:autosnap -Ho value {}".format(zpool)).strip().lower()
+        val = subrun("/sbin/zfs get {}:autosnap -Ho value {}".format(PROPERTYPREFIX, zpool)).strip().lower()
         periods = periods_from_attribute(val)
         r = periods.get(period[0])
         if r and r > 0:
@@ -125,10 +125,12 @@ def periods_from_attribute(val):
 def delit():
     re_snap_type = re.compile("@omix_(monthly|weekly|daily|hourly)-")
     for zpool in zpools:
-        datasets = subrun("/sbin/zfs list -rHo name,ua.com.omix:autosnap {}".format(zpool)).strip().splitlines()
+        datasets = subrun("/sbin/zfs list -rHo name,{}:autosnap {}".format(PROPERTYPREFIX,zpool)).strip().splitlines()
         for dataset in datasets:
             (dataset, val) = dataset.split("\t")
             periods = periods_from_attribute(val)
+            if not periods:
+                continue
             mwh = {"m": [], "w": [], "d": [], "h": []}
             for snap in subrun("/sbin/zfs list -rd1 -Ho name -t snap -S creation {}".format(dataset)).splitlines():
                 k = re_snap_type.findall(snap)
