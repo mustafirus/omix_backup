@@ -119,15 +119,19 @@ def _log_returncode(code, fname, logname):
 
 def loadconfig():
     with open(confdir+"/omix_backup.json", 'r') as conffile:
-        # global backup_config
-        try:
-            config = json.load(conffile)
-            set_state('config', 'ok')
-        except JSONDecodeError as e:
-            config = None
-            set_state('config', 'error', "incorrect config: " + str(e))
+        config = json.load(conffile)
+        set_state('config', 'ok')
         save_state()
         return config
+        # global backup_config
+        # try:
+        #     config = json.load(conffile)
+        #     set_state('config', 'ok')
+        # except JSONDecodeError as e:
+        #     config = None
+        #     set_state('config', 'error', "incorrect config: " + str(e))
+        # save_state()
+        # return config
 
 
 # def check_shutdown():
@@ -136,7 +140,9 @@ def loadconfig():
 #
 
 def logfilename(parts):
-    return "{}/{}_{}.log".format(logdir, '_'.join(parts), datetime.now().strftime("%Y-%m-%d_%H:%M:%S"))
+    parts = list(parts)
+    clientdir = parts.pop(0)
+    return "{}/{}/{}_{}.log".format(logdir, clientdir, '_'.join(parts), datetime.now().strftime("%Y-%m-%d_%H:%M:%S"))
 
 needed_soft = [
     ('mbuffer', 'mbuffer')
@@ -395,9 +401,10 @@ class Dataset:
                 Origin(src_path, self.origins_path + '/' + os.path.basename(src_path)))
 
     def _log_next_sync(self):
-        _log_info("Next sync for: {}:{} on: {}".
-                  format(self.src_host, self.src_path,
-                         datetime.fromtimestamp(self.next).strftime('%Y-%m-%d %H:%M:%S')))
+        if self.next > datetime.now().timestamp():
+            _log_info("Next sync for: {}:{} on: {}".
+                      format(self.src_host, self.src_path,
+                             datetime.fromtimestamp(self.next).strftime('%Y-%m-%d %H:%M:%S')))
 
     def _set_next_sync(self, interval):
         self.next = datetime.now().timestamp() + interval
@@ -729,7 +736,6 @@ class DSHolder:
 
     @dest.setter
     def dest(self, dest):
-        dest = dest if dest != 'omix_cloud' else omix_cloud_dest
         (dest_host, dest_path) = dest.split(':')
         if self._dest_host is None and self._dest_path is None:
             self._dest_host, self._dest_path = dest_host, dest_path
@@ -762,9 +768,10 @@ class DSHolder:
             allpaths.extend(vm.paths)
         return allpaths
 
-    def lognextsync(self):
-        for path in self.get_all_paths():
-            path.dataset._log_next_sync()
+    # def lognextsync(self):
+    #     for path in self.get_all_paths():
+    #         if path.dataset.next > datetime.now().timestamp():
+    #             path.dataset._log_next_sync()
 
     def next2run(self):
         runseq = {}
@@ -855,13 +862,21 @@ class ClientThread(threading.Thread):
 
     @staticmethod
     def setconf():
+        try:
+            ClientThread._setconf()
+        except JSONDecodeError as e:
+            set_state('config', 'error', "incorrect config: " + str(e))
+        except KeyError as e:
+            set_state('config', 'error', "incorrect config: field not found:" + str(e))
+        save_state()
+
+    @staticmethod
+    def _setconf():
         confs = loadconfig()
-        if not confs:
-            return
         must = []
         for conf in confs:
             name = conf["client"]
-            seq = conf["seq"]
+            seq = conf.get("seq", 0)
             must.append(name)
             ct = ClientThread.clients.get(name)
             if ct and ct.seq == seq:
@@ -905,7 +920,9 @@ class ClientThread(threading.Thread):
         del ClientThread.clients[self.client]
 
     def parseconf(self):
-        self.dsholder.dest = self.conf['dest'] + '/' + self.client
+        dest = self.conf['dest']
+        dest = dest if dest != 'omix_cloud' else omix_cloud_dest
+        self.dsholder.dest = dest + '/' + self.client
         host = self.dsholder.dest_host
         if not check_prerequisites(host):
             raise BadClient("check prerequisites!")
@@ -956,12 +973,13 @@ class ClientThread(threading.Thread):
     def _run(self):
         # threading.local
         threading.local().ClientThread = self
+        os.makedirs(logdir + '/' + self.client, exist_ok=True)
         # prepare_datasets_last = 0
         # update_datasets_last = 0
         nr_prepare_datasets = NextRunner(self.dsholder.prepare_datasets, PREPARE_DATASETS_FREQ)
         nr_update_datasets = NextRunner(self.dsholder.update_datasets, TRY_UPDATE_DATASETS_FREQ)
 
-        self.dsholder.lognextsync()
+        # self.dsholder.lognextsync()
 
         while not self.shutdown.is_set():
             if self.conf:
