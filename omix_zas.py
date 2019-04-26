@@ -103,6 +103,14 @@ def snapit():
         r = periods.get(period[0])
         if r and r > 0:
             subrun("/sbin/zfs snap -r {}@{}".format(zpool, snapname))
+            datasets = subrun("/sbin/zfs list -rHo name,{}:autosnap {}".format(PROPERTYPREFIX, zpool))\
+                .strip().splitlines()
+            for dataset in datasets:
+                (dataset, val) = dataset.split("\t")
+                periods = periods_from_attribute(val)
+                if not periods:
+                    subrun("/sbin/zfs destroy -d {}@{}".format(dataset, snapname))
+
     shedule()
 
 
@@ -140,7 +148,7 @@ def delit():
                 if k in periods:
                     mwh[k] = mwh[k][periods[k]:]
             for snap in list(itertools.chain.from_iterable(mwh.values())):
-                subrun("/sbin/zfs destroy {}".format(snap))
+                subrun("/sbin/zfs destroy -d {}".format(snap))
             pass
 
 
