@@ -1,4 +1,5 @@
 #!/usr/bin/python3 -uO
+
 import re
 from _signal import SIGTERM, SIG_BLOCK
 from datetime import datetime
@@ -10,25 +11,23 @@ from subprocess import PIPE, STDOUT, Popen, DEVNULL, run, CalledProcessError, Ti
 import threading
 from threading import Lock, Event
 from time import sleep
-
-# backup_config = list()
 import sys
 
 omix_cloud_dest = 'pm1.ssc.bla:rpool/misc/omix-backup'
-confdir = '.conf'
-logdir = '.log'
-# confdir = '/etc/omix_replicate'
-# logdir = '/var/log/omix_replicate'
-sync_begin_lock = Lock()
-client_threads = list()
+logdir = '/var/log/omix_replicate'
 DEFAULT_INTERVAL = '1d'  # '99999d'
 FAIL_INTERVAL = 3600  # seconds
 PREPARE_DATASETS_FREQ = 200
 TRY_UPDATE_DATASETS_FREQ = 300
 UPDATE_DATASETS_FREQ = 3600
 CHECK_RUNNING_ORPHAN_SYNC = 3600
-TOPICPREFIX = 'omix/rep/'
 CONFIG_FREQ = 20
+# confdir = None
+# confdir = '.conf'
+# confdir = '/etc/omix_replicate'
+TOPICPREFIX = 'omix/rep/'
+sync_begin_lock = Lock()
+client_threads = list()
 shutdown = Event()
 mystate = {}
 running_syncs = []
@@ -38,13 +37,16 @@ REMOTEPROCBASHCMD = "bash -s -- omixrepl561BAA1"
 # TODO: check free mem 1G
 # TODO: wait for usb dest pool
 
-# FOR DEBUG
-DEFAULT_INTERVAL = '1h'  # '99999d'
-FAIL_INTERVAL = 60  # seconds
-PREPARE_DATASETS_FREQ = 200
-TRY_UPDATE_DATASETS_FREQ = 300
-UPDATE_DATASETS_FREQ = 600
-CHECK_RUNNING_ORPHAN_SYNC = 20
+
+# # confdir/defaults.py FOR DEBUG
+# logdir = '.log'
+# DEFAULT_INTERVAL = '1h'  # '99999d'
+# FAIL_INTERVAL = 60  # seconds
+# PREPARE_DATASETS_FREQ = 200
+# TRY_UPDATE_DATASETS_FREQ = 300
+# UPDATE_DATASETS_FREQ = 600
+# CHECK_RUNNING_ORPHAN_SYNC = 20
+# CONFIG_FREQ = 20
 
 
 class BadClient(Exception):
@@ -145,7 +147,8 @@ def logfilename(parts):
     return "{}/{}/{}_{}.log".format(logdir, clientdir, '_'.join(parts), datetime.now().strftime("%Y-%m-%d_%H:%M:%S"))
 
 needed_soft = [
-    ('mbuffer', 'mbuffer')
+    ('mbuffer', 'mbuffer'),
+    ('gawk', 'gawk')
 ]
 good_hosts = set()
 def check_prerequisites(host):
@@ -1132,6 +1135,20 @@ def signal_handler(sig, frame):
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Controls zfs replication.')
+    parser.add_argument('-c', '--confdir', default='/etc/omix_replicate',
+                        help='config directory')
+
+    args = parser.parse_args()
+    confdir = args.confdir
+    try:
+        sys.path.append(confdir)
+        from defaults import *
+    except ImportError:
+        pass
+    exit()
     # exit(0)
     # signal(SIGINT, signal_handler)
     # signal(SIGTERM, signal_handler)
