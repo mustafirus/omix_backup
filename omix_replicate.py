@@ -36,6 +36,7 @@ REMOTEPROCBASHCMD = "bash -s -- omixrepl561BAA1"
 # TODO: check time sync with target hosts max delta ~5 sec notify if not refuse to repl if >1h
 # TODO: check free mem 1G
 # TODO: wait for usb dest pool
+# DONE: make REMOTEPROCBASHCMD client specific or send/recv specific?
 
 
 # # confdir/defaults.py FOR DEBUG
@@ -192,6 +193,7 @@ def check_zfs_version(host):
 
 
 def check_is_running_sync(host):
+    REMOTEPROCBASHCMD = ClientThread.getREMOTEPROCBASHCMD()
     ps = run(['ssh', "root@" + host, 'pgrep -fx "{}"'.format(REMOTEPROCBASHCMD)], stdout=DEVNULL)
     if ps.returncode == 0:
         _log_error(host + ": previous sync already running")
@@ -280,6 +282,7 @@ def remote_cmd_xargs(host, cmd, argstr):
 
 def remote_sync_cmd(host, cmd, log):
     if host and cmd:
+        REMOTEPROCBASHCMD = ClientThread.getREMOTEPROCBASHCMD()
         proc = Popen(["ssh", "root@" + host, REMOTEPROCBASHCMD],
                      stdin=PIPE, stdout=log, stderr=STDOUT, universal_newlines=True)
         # SIGINT SIGTERM SIGHUP SIGPIPE SIGQUIT
@@ -833,6 +836,7 @@ class DSHolder:
     def update_datasets(self):
         for path in self.get_all_paths():
             if path.dataset and path.dataset.last_update + 3600 < datetime.now().timestamp():
+                #TODO: check reachable
                 path.dataset.set_next_planed_sync()
 
     def vm2paths(self):
@@ -853,6 +857,7 @@ class DSHolder:
 class ClientThread(threading.Thread):
 
     clients = dict()
+    tloc = threading.local()
 
     def __init__(self, name):
         super().__init__()
@@ -862,6 +867,12 @@ class ClientThread(threading.Thread):
         self.seq = None
         self.dsholder = DSHolder(name)
         ClientThread.clients.update({name: self})
+
+    @staticmethod
+    def getREMOTEPROCBASHCMD():
+        if not ClientThread.tloc.REMOTEPROCBASHCMD:
+            raise Exception
+        return ClientThread.tloc.REMOTEPROCBASHCMD
 
     @staticmethod
     def setconf():
@@ -975,7 +986,7 @@ class ClientThread(threading.Thread):
 
     def _run(self):
         # threading.local
-        threading.local().ClientThread = self
+        self.tloc.REMOTEPROCBASHCMD = REMOTEPROCBASHCMD + self.client
         os.makedirs(logdir + '/' + self.client, exist_ok=True)
         # prepare_datasets_last = 0
         # update_datasets_last = 0
@@ -1148,7 +1159,7 @@ if __name__ == "__main__":
         from defaults import *
     except ImportError:
         pass
-    exit()
+    # exit()
     # exit(0)
     # signal(SIGINT, signal_handler)
     # signal(SIGTERM, signal_handler)
