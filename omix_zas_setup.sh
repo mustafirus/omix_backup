@@ -8,4 +8,4 @@ systemctl daemon-reload
 systemctl restart rsyslog
 systemctl enable omix_zas
 systemctl start omix_zas
-zfs set ua.com.omix:autosnap="8h 7d 4w 3m"
+zfs set ua.com.omix:autosnap="8h 7d 4w 3m" rpool
