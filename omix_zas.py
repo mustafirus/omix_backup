@@ -118,7 +118,7 @@ def periods_from_attribute(val):
     re_dD = re.compile("(\d+)(\D)")
     periods = {}
     val = val.lower()
-    if val in ('-', 'false', 'no', 'skip'):
+    if val in ('-', 'off', 'no', 'skip', 'false'):
         return periods
     for val in val.split():
         try:

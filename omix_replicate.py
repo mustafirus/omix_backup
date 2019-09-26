@@ -37,6 +37,10 @@ REMOTEPROCBASHCMD = "bash -s -- omixrepl561BAA1"
 # TODO: check free mem 1G
 # TODO: wait for usb dest pool
 # DONE: make REMOTEPROCBASHCMD client specific or send/recv specific?
+# TODO: if Connection refused MUST try later. Now: error:  home: bad / nothing to do; info:  home: exit thread
+# TODO: cheack reachability in check prerequisites
+# TODO: unreachable retry timeout 600
+
 
 
 # # confdir/defaults.py FOR DEBUG
@@ -170,7 +174,7 @@ def check_and_install_soft(host):
         return True
     pkgs = ' '.join(pkgs)
     _log_info("{}: need to install {}".format(host, pkgs))
-    run(['ssh', "root@" + host, 'apt-get install -y ' + pkgs], stdout=DEVNULL)
+    run(['ssh', "root@" + host, 'DEBIAN_FRONTEND=noninteractive apt-get install -y ' + pkgs], stdout=DEVNULL)
     if ps.returncode == 0:
         _log_info("{}: install OK".format(host))
         return True
@@ -1121,15 +1125,15 @@ last_snap_make_sync_cmd='''
 ds=$1
 snap=$2
 set -e
-zfs set ua.omix.bla:omix_old=$snap $ds@$snap
+zfs set ua.com.omix:omix_old=$snap $ds@$snap
 zfs rename $ds@$snap $ds@omix_sync
 '''
 restore_original_snaps_cmd='''
 ds=$1
 set -e
-script='{ print "zfs rename " $2"@"$3 " " $2"@"$1 "; zfs inherit ua.omix.bla:omix_old " $2"@"$1 "\\n" }
+script='{ print "zfs rename " $2"@"$3 " " $2"@"$1 "; zfs inherit ua.com.omix:omix_old " $2"@"$1 "\\n" }
 '
-commands=$(zfs get -r -Hovalue,name ua.omix.bla:omix_old $ds | sed -e '/^-/d' -e 's/@/ /' |  awk "$script")
+commands=$(zfs get -r -Hovalue,name ua.com.omix:omix_old $ds | sed -e '/^-/d' -e 's/@/ /' |  awk "$script")
 eval "$commands"
 '''
 
