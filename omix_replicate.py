@@ -38,8 +38,9 @@ REMOTEPROCBASHCMD = "bash -s -- omixrepl561BAA1"
 # TODO: wait for usb dest pool
 # DONE: make REMOTEPROCBASHCMD client specific or send/recv specific?
 # TODO: if Connection refused MUST try later. Now: error:  home: bad / nothing to do; info:  home: exit thread
-# TODO: cheack reachability in check prerequisites
+# TODO: check reachability in check prerequisites
 # TODO: unreachable retry timeout 600
+# TODO: dont applies config parameter dest if changed
 
 
 
