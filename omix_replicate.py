@@ -41,6 +41,8 @@ REMOTEPROCBASHCMD = "bash -s -- omixrepl561BAA1"
 # TODO: check reachability in check prerequisites
 # TODO: unreachable retry timeout 600
 # TODO: dont applies config parameter dest if changed
+# TODO: zfs send -v -t 1-1238aafdf7-148-78... zfs recv -suvF rback/ssc/pm1.ssc.bla/vmkvm/base-9002-disk-2
+#       cannot resume send: fs@snap.... used in the initial send no longer exists
 
 
 
@@ -587,9 +589,10 @@ class Dataset:
 
     def _sync(self, cmd_send, cmd_recv):
         self.check_shutdown()
-        mbuf_send = "| mbuffer -q -s 128k -m 256M -O {}:9000 -W 300".format(self.dest_host)
-        mbuf_recv = "mbuffer -q -s 128k -m 256M -I 9000 -W 300 | "
-        mbuf_loc = "| mbuffer -q -s 128k -m 256M -W 300 |"
+        logmbuffer = "-l`mktemp --tmpdir --suffix=.log mbuffer.XXXX`"
+        mbuf_send = "| mbuffer -q -s 128k -m 256M -O {}:9000 -W 300 {}".format(self.dest_host, logmbuffer)
+        mbuf_recv = "nc -l -p9000 -w30 | mbuffer -q -s 128k -m 256M -W 300 {} | ".format(logmbuffer)
+        mbuf_loc = "| mbuffer -q -s 128k -m 256M -W 300 {} |".format(logmbuffer)
 
         log = self.logfile if self.logfile and not self.logfile.closed else None
         with sync_begin_lock:
